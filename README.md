@@ -28,7 +28,7 @@ uploaded and no model needs downloading.
 ## Installation
 
 ```bash
-git clone https://github.com/<you>/wild-water-world-autoplay.git
+git clone https://github.com/livejiaquan/wild-water-world-autoplay.git
 cd wild-water-world-autoplay
 ./install.command
 ```
