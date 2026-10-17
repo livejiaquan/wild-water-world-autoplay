@@ -114,6 +114,20 @@ def main():
     last_state, last_change = None, time.time()
     click_times, stage_seen, stats = [], None, {}
     reason = "正常結束"
+    last_shot = {}        # 狀態 -> 上次存圖時間，避免同一種狀況狂存
+
+    def maybe_snapshot(tag, img, items, note, every=60.0):
+        """同一種狀況最多每 every 秒留一張圖。
+
+        不限制的話，一段長時間看不懂的畫面會每 1.2 秒寫一張 PNG，
+        整晚跑下來足以塞爆硬碟。
+        """
+        now = time.time()
+        if now - last_shot.get(tag, 0) < every:
+            return False
+        last_shot[tag] = now
+        log.snapshot(img, tag, items, note)
+        return True
 
     try:
         while running:
@@ -157,13 +171,16 @@ def main():
                 log.snapshot(img, "stuck", items, f"卡在 {s.state}")
                 break
 
-            # ---- 需要人介入：認得畫面，但關鍵按鈕讀不到 ----
+            # ---- 認得畫面，但關鍵按鈕讀不到 ----
+            # 不立刻收工：實測看過劇情對話框暫時蓋住「再戰一次」，
+            # 十秒後就恢復正常。這裡只等待與記錄，真的卡住的話
+            # 交給上面的 max-stuck 逾時處理。
             if s.state == "NEEDS_HUMAN":
-                log.say(f"需要人看一下：{s.note}")
-                log.snapshot(img, "needs_human", items, s.note)
-                log.action(s.state, s.stage, "（停住）", "", s.note)
-                reason = s.note
-                break
+                if maybe_snapshot("needs_human", img, items, s.note):
+                    log.say(f"暫時讀不到按鈕，先等一下：{s.note}")
+                    log.action(s.state, s.stage, "（等待）", "", s.note)
+                time.sleep(args.interval)
+                continue
 
             # ---- 要點的畫面 ----
             if s.state in ACTIONS and s.click:
@@ -197,9 +214,9 @@ def main():
 
             # ---- 看不懂的畫面：不動作，但留證據 ----
             if s.state == "UNKNOWN":
-                log.say("看不懂這個畫面，沒動作（細節寫進 log 了）")
-                log.snapshot(img, "unknown", items, "無法判斷的畫面")
-                log.action(s.state, s.stage, "（不動作）", "", "")
+                if maybe_snapshot("unknown", img, items, "無法判斷的畫面"):
+                    log.say("看不懂這個畫面，沒動作（細節寫進 log 了）")
+                    log.action(s.state, s.stage, "（不動作）", "", "")
 
             time.sleep(args.interval)
 

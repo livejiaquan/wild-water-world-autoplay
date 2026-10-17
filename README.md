@@ -138,10 +138,17 @@ decorative typeface that OCR frequently mangles — `挑戰勝利` ("Victory") h
 been observed decoding as `挑郫膀朻`, three characters wrong out of four —
 while the `下一關` button on the same frame reads at confidence 1.00.
 
-Matching tolerates a single wrong character and strips trailing digits, because
-the button legend is really `下一關(4)` with an auto-advance countdown. The
-length bound is kept tight: a loose substring match once caused a commentator's
-subtitle, `那開戰進來`, to be taken for the `開戰` button.
+Matching strips trailing digits — the button legend is really `下一關(4)`, with
+an auto-advance countdown — but is otherwise **exact against an explicit list of
+known OCR variants**, with a tight length bound.
+
+Fuzzy matching was tried and removed. Tolerating a single wrong character is
+catastrophic for short keys: `城战`, `甙战` and `提战` all matched `开战`, twice
+on a ¥648 purchase screen. Three-character keys are no safer, because
+`下一页` and `下一级` are real words one character away from `下一關`. An
+unrecognised misreading now falls through to `UNKNOWN`, where it is logged
+with its OCR dump so the variant can be added deliberately. Missing a click
+is cheap; a wrong click is not.
 
 ### Capture reads a window; clicks hit the screen
 
@@ -177,9 +184,11 @@ The game has an in-app purchase interface, so the bot is built to stop rather
 than guess:
 
 - **Unrecognised screens are never clicked** — screenshot and OCR dump only.
-- **A result screen whose button cannot be read halts the run.** On the victory
-  screen *Back* and *Next stage* sit on the same row about 180 px apart;
-  a guessed coordinate could exit the stage instead of advancing.
+- **A result screen whose button cannot be read is waited out, not guessed.** On
+  the victory screen *Back* and *Next stage* sit on the same row about 180 px
+  apart, so a guessed coordinate could exit the stage instead of advancing.
+  A story dialogue can briefly cover the button, so the bot waits and retries;
+  the stuck-screen timeout ends the run if it never clears.
 - **Occluded buttons are not clicked.**
 - Automatic stop after 20 clicks in a minute (runaway detection).
 - Automatic stop after 5 minutes on an unchanging screen.
@@ -211,15 +220,32 @@ All test material is captured from real gameplay; none of it is synthetic.
 
 `replay_test.py` feeds a screen recording through the detector frame by frame,
 which makes the whole pipeline testable without the game running.
-`scan_videos.py` was used to mine roughly 100 minutes of publicly available
-gameplay footage for screens the detector did not yet handle; it found three
-defects that would each have stalled the loop:
+`scan_videos.py` mines footage for screens the detector does not yet handle.
+`audit.py` goes further: it classifies sampled frames, draws the intended click
+target on each, and lays them out as labelled contact sheets per state, so the
+verdicts can be checked by eye rather than taken on trust.
+
+Roughly 100 minutes of public footage was mined first, surfacing three defects
+that would each have stalled the loop:
 
 | Finding | Consequence if unfixed |
 |---|---|
 | The victory banner reads `挑戰勝利`, not `戰鬥勝利` | Victory never recognised |
 | The button legend is `下一關(4)` with a countdown | Trailing digits broke matching |
 | The banner frequently OCRs as `挑郫膀朻` | Unrecognisable; fixed by keying off the button |
+
+A second pass over four further videos (1,048 sampled frames, visually audited)
+found three more, two of them dangerous:
+
+| Finding | Consequence if unfixed |
+|---|---|
+| `城战` / `甙战` / `提战` matched `开战` | **Clicking a ¥648 purchase screen** |
+| `下一页` / `下一级` matched `下一關` | **Clicking an event-promo popup** |
+| A story dialogue briefly covered the retry button | The run halted; the screen cleared 10s later |
+
+After the fixes, the audited verdicts were: victory 10/10, stage-select 8/8,
+skip 3/3, defeat 3/3 correct, with no missed actionable screen in the sampled
+`UNKNOWN` frames.
 
 Against the author's own 2-minute recording (stage 876, eight consecutive
 defeats, 936×1618), the detector classified 242 frames with no
@@ -247,6 +273,7 @@ misclassification.
 | `waterbot/preflight.py` | Environment and permission self-check |
 | `waterbot/replay_test.py` | Offline replay against a recording |
 | `waterbot/scan_videos.py` | Footage mining for unhandled screens |
+| `waterbot/audit.py` | Classify footage and render contact sheets for visual audit |
 | `waterbot/probe_frames.py` | OCR dump for a single image |
 | `tests/` | Regression suite and real-screen fixtures |
 
