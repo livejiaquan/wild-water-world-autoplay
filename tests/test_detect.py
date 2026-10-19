@@ -64,6 +64,35 @@ CASES = [
 TOL = 12   # 座標容許誤差（像素）
 
 
+def band_agrees():
+    """主迴圈在等結果時只掃畫面下方那一條來搶速度。
+
+    這個最佳化成立的前提是：會觸發點擊的畫面，只掃下方條的判讀結果
+    必須和掃全張完全一致（狀態與座標都是）。這裡就是驗這件事。
+    """
+    import bot  # noqa: PLC0415  —— 只為了拿 BAND_TOP，避免常數寫兩份
+    fails = []
+    print("\n── 只掃下方按鈕區時，判讀要和掃全張一致 ──")
+    for name, want_state, want_click, _ in CASES:
+        if want_state not in ("DEFEAT", "VICTORY", "SKIPPABLE", "STAGE_SELECT"):
+            continue
+        img = cv2.imread(os.path.join(FIX, name))
+        h, w = img.shape[:2]
+        full = classify(ocr(img), w, h)
+        y0 = int(h * bot.BAND_TOP)
+        band_items = [(t, x, y + y0, c) for t, x, y, c in ocr(img[y0:])]
+        band = classify(band_items, w, h)
+        ok = (full.state == band.state and full.click is not None
+              and band.click is not None
+              and abs(full.click[0] - band.click[0]) <= TOL
+              and abs(full.click[1] - band.click[1]) <= TOL)
+        print(f"[{'ok  ' if ok else 'FAIL'}] {name:<30} "
+              f"全張 {full.state}{full.click} / 下方條 {band.state}{band.click}")
+        if not ok:
+            fails.append(f"{name}: 下方條判讀與全張不一致")
+    return fails
+
+
 def run():
     fails = []
 
@@ -105,6 +134,8 @@ def run():
             for b in bad:
                 print(f"        !! {b}")
             fails.append(f"{name}: " + "; ".join(bad))
+
+    fails += band_agrees()
 
     print()
     if fails:

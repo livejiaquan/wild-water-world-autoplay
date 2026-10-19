@@ -45,6 +45,7 @@ class Screen:
     click: tuple | None = None   # (x, y) 截圖像素座標
     stage: int | None = None
     note: str = ""
+    countdown: int | None = None  # 戰鬥中「還要幾秒才能跳過」，給主迴圈排程用
 
 
 def _close(text_norm: str, key: str, slack: int) -> bool:
@@ -129,8 +130,10 @@ def classify(ocr_items, w, h) -> Screen:
     cd = _contains(ocr_items, "秒後可跳過", "秒后可跳过")
     if cd:
         m = COUNTDOWN_RE.search(_norm(cd[0]))
+        secs = int(m.group(1)) if m else None
         return Screen("BATTLE", None, stage,
-                      f"剩{m.group(1)}秒可跳過" if m else "")
+                      f"剩{secs}秒可跳過" if secs is not None else "",
+                      countdown=secs)
 
     # 5. 關卡畫面 → 開戰
     hit = _find(ocr_items, START_BTN)
