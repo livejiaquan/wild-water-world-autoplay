@@ -29,13 +29,17 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 STOP_FILE = os.path.join(HERE, "STOP")
 OUT = os.path.join(HERE, "out")
 
-# 哪些狀態要點、點完等多久（秒）才值得再看一次
+# 哪些狀態要點、點完最多等多久（秒）。這只是上限：點完會以 FAST_POLL 的
+# 節奏快速複查，畫面一離開原狀態就立刻往下，不會傻等滿。
 ACTIONS = {
     "DEFEAT":       ("再戰一次", 2.5),
     "VICTORY":      ("下一關",   2.5),
     "SKIPPABLE":    ("跳過",     1.5),
     "STAGE_SELECT": ("開戰",     3.0),
 }
+
+FAST_POLL = 0.2       # 剛點完、等畫面轉場時的複查間隔
+MIN_SETTLE = 0.3      # 點完至少先等這麼久再看，避免看到點擊前的殘影
 
 running = True
 
@@ -66,7 +70,7 @@ def build_parser():
         description="瘋狂水世界 自動刷關",
         formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--app", default="水世界", help="遊戲視窗名稱關鍵字")
-    ap.add_argument("--interval", type=float, default=1.2, help="每幾秒看一次")
+    ap.add_argument("--interval", type=float, default=0.5, help="每幾秒看一次")
     ap.add_argument("--dry-run", action="store_true", help="只印不點")
     ap.add_argument("--list", action="store_true", help="列出所有視窗後結束")
     ap.add_argument("--check", action="store_true", help="檢查環境與權限後結束")
@@ -115,6 +119,7 @@ def main():
     click_times, stage_seen, stats = [], None, {}
     reason = "正常結束"
     last_shot = {}        # 狀態 -> 上次存圖時間，避免同一種狀況狂存
+    pending = None        # (剛點過的狀態, 等待截止時間)
 
     def maybe_snapshot(tag, img, items, note, every=60.0):
         """同一種狀況最多每 every 秒留一張圖。
@@ -171,6 +176,15 @@ def main():
                 log.snapshot(img, "stuck", items, f"卡在 {s.state}")
                 break
 
+            # ---- 剛點過：畫面還沒離開原狀態就繼續快速等，不重複點 ----
+            if pending:
+                p_state, p_deadline = pending
+                now = time.time()
+                if s.state == p_state and now < p_deadline:
+                    time.sleep(FAST_POLL)
+                    continue
+                pending = None
+
             # ---- 認得畫面，但關鍵按鈕讀不到 ----
             # 不立刻收工：實測看過劇情對話框暫時蓋住「再戰一次」，
             # 十秒後就恢復正常。這裡只等待與記錄，真的卡住的話
@@ -209,7 +223,8 @@ def main():
                     click_times.append(time.time())
                     log.say(f"{s.state:<13} 點了「{label}」@螢幕({gx},{gy})")
                     log.action(s.state, s.stage, label, (gx, gy), s.note)
-                time.sleep(wait)
+                pending = (s.state, time.time() + wait)
+                time.sleep(MIN_SETTLE)
                 continue
 
             # ---- 看不懂的畫面：不動作，但留證據 ----

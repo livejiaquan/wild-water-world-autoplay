@@ -17,21 +17,51 @@ say "這會花幾分鐘，中途不用管它。"
 # ---------------------------------------------------------------
 head2 "1/4 檢查 Python"
 
+PKGS="opencv-python-headless numpy pyobjc-framework-Vision \
+pyobjc-framework-Quartz pyobjc-framework-ApplicationServices"
+
+# 系統內建的 /usr/bin/python3 其實是個殼：沒裝 Xcode 命令列工具時，
+# 光是執行它就會彈出「要安裝開發者工具嗎」的視窗。所以在確認工具
+# 存在之前，絕對不能去跑它 —— 只檢查路徑，不執行。
+HAS_CLT=0
+xcode-select -p >/dev/null 2>&1 && HAS_CLT=1
+
 PY=""
-# 先找找看有沒有堪用的 Python（3.9 以上，而且 venv 能動）
-for cand in python3.13 python3.12 python3.11 python3.10 python3; do
-    p="$(command -v "$cand" 2>/dev/null)" || continue
-    # macOS 的 /usr/bin/python3 是個殼，沒裝 Xcode 工具時會跳視窗，先排除
-    "$p" -c 'import sys,venv; sys.exit(0 if sys.version_info>=(3,9) else 1)' \
-        >/dev/null 2>&1 || continue
-    PY="$p"; break
-done
+if [ "${WATERBOT_FORCE_UV:-0}" != "1" ]; then
+    for cand in python3.13 python3.12 python3.11 python3.10 python3; do
+        p="$(command -v "$cand" 2>/dev/null)" || continue
+        case "$p" in
+            /usr/bin/*)
+                [ "$HAS_CLT" = 1 ] || continue   # 是殼，別碰
+                ;;
+        esac
+        "$p" -c 'import sys,venv; sys.exit(0 if sys.version_info>=(3,9) else 1)' \
+            >/dev/null 2>&1 || continue
+        PY="$p"; break
+    done
+fi
 
 if [ -n "$PY" ]; then
     ok "找到可用的 Python：$("$PY" --version 2>&1)"
+
+    head2 "2/4 建立執行環境"
+    rm -rf waterbot/.venv
+    "$PY" -m venv waterbot/.venv >/dev/null 2>&1 || die "建立環境失敗。"
+    ok "建好了"
+
+    head2 "3/4 下載必要套件（這步最久，請耐心等）"
+    ./waterbot/.venv/bin/python -m pip install -q --upgrade pip >/dev/null 2>&1
+    # shellcheck disable=SC2086
+    if ! ./waterbot/.venv/bin/python -m pip install -q $PKGS \
+            2>/tmp/waterbot_pip_err.txt; then
+        say ""; say "安裝套件時出錯，錯誤訊息："
+        tail -20 /tmp/waterbot_pip_err.txt
+        die "請把上面的訊息截圖回報。"
+    fi
+    ok "套件裝好了"
 else
-    warn "這台電腦沒有可用的 Python，幫你裝一份獨立的（不會影響系統）"
-    # uv 會自己下載一份乾淨的 Python，不需要 Xcode 工具、不需要管理員密碼
+    say "   這台電腦沒有可用的 Python，幫你裝一份獨立的。"
+    say "   （不會影響系統、不需要密碼，也不需要 Xcode 工具）"
     if ! command -v uv >/dev/null 2>&1; then
         say "   正在下載安裝工具 uv ..."
         curl -LsSf https://astral.sh/uv/install.sh | sh >/dev/null 2>&1 \
@@ -39,32 +69,27 @@ else
     fi
     export PATH="$HOME/.local/bin:$HOME/.cargo/bin:$PATH"
     command -v uv >/dev/null 2>&1 || die "uv 安裝失敗，請把這個畫面截圖回報。"
-    say "   正在準備 Python ..."
-    uv python install 3.12 >/dev/null 2>&1 || die "Python 安裝失敗。"
-    PY="$(uv python find 3.12 2>/dev/null)"
-    [ -n "$PY" ] || die "找不到剛裝好的 Python。"
-    ok "已裝好獨立的 Python：$("$PY" --version 2>&1)"
-fi
+    ok "準備工具完成"
 
-# ---------------------------------------------------------------
-head2 "2/4 建立執行環境"
-rm -rf waterbot/.venv
-"$PY" -m venv waterbot/.venv >/dev/null 2>&1 || die "建立環境失敗。"
-ok "建好了"
+    head2 "2/4 建立執行環境（含下載 Python）"
+    rm -rf waterbot/.venv
+    # uv venv 會視需要自己抓一份獨立的 Python，不碰系統也不需要編譯器
+    uv venv --python 3.12 waterbot/.venv >/tmp/waterbot_uv_err.txt 2>&1 || {
+        tail -20 /tmp/waterbot_uv_err.txt
+        die "建立環境失敗，請把上面的訊息截圖回報。"
+    }
+    ok "建好了：$(./waterbot/.venv/bin/python --version 2>&1)"
 
-# ---------------------------------------------------------------
-head2 "3/4 下載必要套件（這步最久，請耐心等）"
-./waterbot/.venv/bin/python -m pip install -q --upgrade pip >/dev/null 2>&1
-if ! ./waterbot/.venv/bin/python -m pip install -q \
-        opencv-python-headless numpy \
-        pyobjc-framework-Vision pyobjc-framework-Quartz \
-        pyobjc-framework-ApplicationServices 2>/tmp/waterbot_pip_err.txt; then
-    say ""
-    say "安裝套件時出錯，錯誤訊息："
-    tail -20 /tmp/waterbot_pip_err.txt
-    die "請把上面的訊息截圖回報。"
+    head2 "3/4 下載必要套件（這步最久，請耐心等）"
+    # shellcheck disable=SC2086
+    uv pip install --quiet --python waterbot/.venv/bin/python $PKGS \
+            2>/tmp/waterbot_pip_err.txt || {
+        say ""; say "安裝套件時出錯，錯誤訊息："
+        tail -20 /tmp/waterbot_pip_err.txt
+        die "請把上面的訊息截圖回報。"
+    }
+    ok "套件裝好了"
 fi
-ok "套件裝好了"
 
 # ---------------------------------------------------------------
 head2 "4/4 檢查權限"

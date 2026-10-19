@@ -16,6 +16,27 @@ process memory is touched.
 
 ---
 
+## Who this is for
+
+Built specifically for **Wild Water World**'s stage-grinding loop: the same
+screens come around again and again — **Skip → retry on defeat → next stage on
+victory → Start battle** — and the bot presses those buttons for you. It is not
+a generic auto-clicker; on any game or screen it does not recognise it does
+nothing.
+
+**Before you start, make sure:**
+
+| Condition | Notes |
+|---|---|
+| The game runs in a **window** on this Mac | Window title contains「水世界」. Not minimised, and not covered by other windows (when covered it can still see the button but will not click) |
+| The game UI language is **Chinese** | It recognises the on-screen text 再戰一次 / 下一關 / 跳過 / 開戰, in Traditional or Simplified. Other languages will not work |
+| You are on the **stage screen** (the 開戰 button) or mid-battle | It takes over from there; starting on a result screen also works |
+| Your team, stamina and resources are ready | It does not change teams, refill stamina or touch the shop |
+
+On a screen it does not recognise (pop-ups, events, purchase screens, story
+choices) it **does nothing and waits for you**. Return to one of the screens
+above and it carries on by itself.
+
 ## Requirements
 
 - macOS 13 (Ventura) or later, Apple Silicon or Intel
@@ -76,7 +97,7 @@ python3 waterbot/bot.py --check                   # environment and permissions
 python3 waterbot/bot.py --list                    # list candidate windows
 python3 waterbot/bot.py --dry-run                 # classify only, never click
 python3 waterbot/bot.py --app 水世界               # window-title keyword
-python3 waterbot/bot.py --interval 1.2            # seconds between frames
+python3 waterbot/bot.py --interval 0.5            # seconds between frames
 python3 waterbot/bot.py --stop-after-stage 900    # stop at a given stage
 python3 waterbot/bot.py --max-stuck 300           # give up after N idle seconds
 python3 waterbot/bot.py --max-clicks-per-min 20   # runaway brake
@@ -91,7 +112,7 @@ game correctly.
 
 ```mermaid
 flowchart TD
-    A[Capture game window<br/>every 1.2s] --> B[Vision OCR<br/>read all on-screen text]
+    A[Capture game window<br/>every 0.5s] --> B[Vision OCR<br/>read all on-screen text]
     B --> C{Which strings<br/>are present?}
 
     C -->|再戰一次 / Retry| D[DEFEAT]
@@ -124,8 +145,10 @@ flowchart TD
     style M fill:#d9e6ff,stroke:#69c
 ```
 
-One cycle takes 13–15 seconds — roughly **four stages per minute** — because
-the bot uses the in-game *Skip* button rather than watching the full battle.
+The bot uses the in-game *Skip* button rather than watching the full battle.
+Cycle time depends mainly on how long until Skip becomes available; after a
+click it does not wait a fixed delay but re-checks every 0.2 s and moves on the
+moment the screen changes.
 
 ### Detection is text-based, and keys off buttons
 
@@ -175,7 +198,7 @@ stays with whatever you are using.
 ### Impact while running
 
 Keyboard focus is never taken. The only interruption is the cursor jumping to
-the button and back — about **150 ms, once every 13 seconds**. CPU use is
+the button and back — about **150 ms, once per button press**. CPU use is
 roughly 20% of one core.
 
 ## Safety behaviour
@@ -253,11 +276,9 @@ misclassification.
 
 ### Known limitations
 
-1. **Not yet exercised against the live game.** The development machine does
-   not have Wild Water World installed; the click mechanism was verified
-   against a native macOS app. iOS apps running on Apple Silicon go through a
-   UIKit translation layer whose handling of synthetic events should be
-   confirmed with `--dry-run` first.
+1. **Only tested on the author's own setup** (where it runs stably). On a
+   different machine, resolution or game version, run with `--dry-run` first
+   to confirm the click targets are right.
 2. **Game updates** that change wording or layout will require updating the
    keyword tables, which are collected at the top of `waterbot/detect.py`.
 
