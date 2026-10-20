@@ -238,9 +238,17 @@ Some stages take a long time, so each clear is appended to
 877     10/20 22:22:11      6分30秒     27 次
 ```
 
-A clear is recognised by the **stage number increasing**, not by the victory
-screen: the victory screen does not always render the stage number legibly,
-while every battle frame carries it.
+A clear is recorded when the bot **actually clicks 下一關**, not when the stage
+number changes. OCR occasionally misreads a digit — 885 has been observed
+reading as 835 — and keying off the number would turn a single misread into a
+fabricated clear, or trip `--stop-after-stage` early. The click is something
+the bot itself did, so it cannot be hallucinated by OCR; it counts only once
+the victory screen has actually gone, so a click that did not register and had
+to be repeated is not double-counted.
+
+The stage number is kept as a label only, and is taken as the **majority of
+recent readings**, reported as unknown when votes are short. It reuses frames
+already being read, so it costs no extra OCR and does not slow the loop.
 
 ## Diagnostics
 

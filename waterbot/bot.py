@@ -16,6 +16,7 @@
 """
 import argparse
 import os
+from collections import Counter, deque
 import signal
 import sys
 import time
@@ -54,6 +55,20 @@ MAX_NAP = 3.0            # 倒數再長也不會一次睡超過這麼久 —— 
 # 實測 OCR 從 112ms 降到 61ms，而且會觸發動作的判讀結果完全一致。
 # 其餘時候仍掃全張，才讀得到關卡編號與結算橫幅。
 BAND_TOP = 0.68
+
+# 關卡編號要連續讀到同一個值幾次才採信。OCR 偶爾會把某一位數字認錯
+# （實際遇過 885 被讀成 835），單次讀數不可靠，但誤讀是零星的，
+# 正確值一定佔多數。用已經在做的那些幀投票，不需要額外 OCR，所以不會變慢。
+STAGE_VOTES = 7          # 參考最近幾次讀數
+STAGE_MIN_VOTES = 2      # 至少要有幾票才算數
+
+
+def confirmed_stage(votes):
+    """從最近的讀數裡取多數，票數不足就回 None（寧可不知道也不要猜錯）。"""
+    if not votes:
+        return None
+    val, n = Counter(votes).most_common(1)[0]
+    return val if n >= STAGE_MIN_VOTES else None
 
 running = True
 
@@ -135,6 +150,9 @@ def main():
     stage_started = time.time()   # 目前這一關是什麼時候開始的
     attempts = 0                  # 這一關失敗重試了幾次
     cleared = []                  # 這次執行通過了哪幾關
+    stage_votes = deque(maxlen=STAGE_VOTES)   # 最近幾次讀到的關卡編號
+    victory_pending = False       # 點了「下一關」，還在等畫面離開勝利頁
+    victory_stage = None          # 點下去的當下，確認過的關卡編號
     reason = "正常結束"
     last_shot = {}        # 狀態 -> 上次存圖時間，避免同一種狀況狂存
     pending = None        # (剛點過的狀態, 等待截止時間)
@@ -194,22 +212,36 @@ def main():
             s = classify(items, w, h)
             stats[s.state] = stats.get(s.state, 0) + 1
 
-            # ---- 關卡進度：編號變大就代表上一關過了 ----
-            # 用編號變化判斷，而不是盯勝利畫面：勝利畫面不一定讀得到
-            # 關卡編號，但戰鬥畫面每一幀都有，所以這個訊號可靠得多。
-            if s.stage and s.stage != stage_seen:
-                if stage_seen is not None and s.stage > stage_seen:
-                    took = time.time() - stage_started
-                    log.say(f"🎉 第 {stage_seen} 關通過！"
-                            f"花了 {human_time(took)}，試了 {attempts} 次")
-                    log.clear(stage_seen, took, attempts)
-                    cleared.append(stage_seen)
-                stage_seen = s.stage
+            # ---- 通關事件：以「點了下一關」為準 ----
+            # 不拿關卡編號當通關訊號。OCR 偶爾會把 885 讀成 835 這種
+            # 一位數誤認，若靠編號變化判斷，一次誤讀就會記下一筆假的通關，
+            # 甚至讓 --stop-after-stage 提早收工。
+            # 點擊是我們自己做的事，不會被 OCR 誤判，所以用它當真憑據；
+            # 而且要等勝利畫面真的消失才算數，避免點沒生效又點一次被重複計。
+            if victory_pending and s.state != "VICTORY":
+                victory_pending = False
+                took = time.time() - stage_started
+                label = victory_stage if victory_stage else "?"
+                log.say(f"🎉 第 {label} 關通過！"
+                        f"花了 {human_time(took)}，試了 {attempts} 次")
+                log.clear(label, took, attempts)
+                cleared.append(victory_stage)
                 stage_started = time.time()
                 attempts = 0
-                log.say(f"── 目前第 {s.stage} 關 ──")
-                if args.stop_after_stage and s.stage >= args.stop_after_stage:
-                    reason = f"已達第 {s.stage} 關"
+                stage_votes.clear()      # 換關了，舊的讀數不再參考
+
+            # ---- 關卡編號：多數決才採信，單次誤讀不算 ----
+            if s.stage:
+                stage_votes.append(s.stage)
+            cur = confirmed_stage(stage_votes)
+            if cur and cur != stage_seen:
+                if stage_seen is not None and cur != stage_seen + 1:
+                    log.line(f"[注意] 關卡編號從 {stage_seen} 變成 {cur}，"
+                             f"不是 +1。可能是辨識誤差或一次過了多關。")
+                stage_seen = cur
+                log.say(f"── 目前第 {cur} 關 ──")
+                if args.stop_after_stage and cur >= args.stop_after_stage:
+                    reason = f"已達第 {cur} 關"
                     log.say(f"達成目標，收工。")
                     break
 
@@ -268,6 +300,9 @@ def main():
                     click_times.append(time.time())
                     if s.state == "DEFEAT":
                         attempts += 1
+                    elif s.state == "VICTORY":
+                        victory_pending = True
+                        victory_stage = stage_seen
                     log.say(f"{s.state:<13} 點了「{label}」@螢幕({gx},{gy})")
                     log.action(s.state, s.stage, label, (gx, gy), s.note)
                 pending = (s.state, time.time() + wait)
@@ -298,8 +333,12 @@ def main():
         return 2
 
     if cleared:
-        log.say(f"這次通過 {len(cleared)} 關："
-                f"第 {cleared[0]} 關 → 第 {cleared[-1]} 關")
+        known = [c for c in cleared if c]
+        if known:
+            log.say(f"這次通過 {len(cleared)} 關："
+                    f"第 {known[0]} 關 → 第 {known[-1]} 關")
+        else:
+            log.say(f"這次通過 {len(cleared)} 關（關卡編號沒讀到）")
         log.say(f"明細看 {OUT}/通關紀錄.txt")
     else:
         log.say("這次沒有通過新的關卡。")
