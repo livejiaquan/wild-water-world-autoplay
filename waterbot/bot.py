@@ -23,6 +23,7 @@ import time
 
 from detect import classify
 from keys import Keys
+import webui
 from ocr import ocr
 from runlog import RunLog, human_time
 from winio import find_windows, grab, click_bg, img_scale, covered_by
@@ -45,6 +46,19 @@ ACTIONS = {
 #   * 剛點完「跳過」→ 結果不是勝利就是失敗，幾乎立刻出現，要盯緊。
 #   * 戰鬥中還在倒數 → 還要幾秒是畫面上寫好的，沒必要一直看，
 #     直接睡到快結束再醒來，省下大量 OCR。
+# 畫面狀態的白話說法，給控制頁顯示用
+HUMAN_STATE = {
+    "BATTLE": "戰鬥中",
+    "SKIPPABLE": "準備跳過",
+    "DEFEAT": "這場輸了，重來",
+    "VICTORY": "過關了",
+    "STAGE_SELECT": "關卡畫面",
+    "MAIN_MENU": "主畫面",
+    "LOADING": "載入中",
+    "NEEDS_HUMAN": "看不清按鈕，等一下",
+    "UNKNOWN": "沒看過的畫面，沒動作",
+}
+
 FAST_POLL = 0.12      # 剛點完、等畫面轉場時的複查間隔
 MIN_SETTLE = 0.15     # 點完至少先等這麼久再看，避免看到點擊前的殘影
 NAP_CHUNK = 0.5          # 長時間等待切成小段，Ctrl-C 和 STOP 才會即時生效
@@ -126,6 +140,10 @@ def build_parser():
                     help="每分鐘最多點幾下，超過視為失控（預設 20）")
     ap.add_argument("--stop-after-stage", type=int, default=None,
                     help="打到第幾關就收工")
+    ap.add_argument("--no-web", action="store_true",
+                    help="不要開瀏覽器控制頁")
+    ap.add_argument("--port", type=int, default=8777,
+                    help="控制頁的埠號（預設 8777）")
     return ap
 
 
@@ -147,6 +165,13 @@ def main():
     log = RunLog(OUT)
     log.line(f"參數: {vars(args)}")
 
+    kb = Keys()
+    ctl = webui.Control()
+    web_url = None
+    if not args.no_web:
+        web_url, _srv = webui.start(ctl, args.port)
+
+
     win = pick_window(args.app)
     if not win:
         log.say(f"找不到包含「{args.app}」的視窗。")
@@ -156,10 +181,10 @@ def main():
 
     log.say(f"盯著：[{win['owner']}] {win['title']} "
             f"{win['w']}x{win['h']} @({win['x']},{win['y']})")
-    kb = Keys()
-    state = {"paused": False}
-
+    ctl.update(window=f"{win['owner']} {win['w']}x{win['h']}")
     log.say(f"每 {args.interval}s 看一次。")
+    if web_url:
+        log.say(f"控制頁：{web_url}")
     if kb.ok:
         log.say("按 空白鍵 暫停／繼續，按 q 結束。")
     else:
@@ -198,8 +223,8 @@ def main():
             log.say("按了 q，收工。")
             return False
         if k in (" ", "p"):
-            state["paused"] = not state["paused"]
-            if state["paused"]:
+            ctl.toggle_pause()
+            if ctl.paused:
                 log.say("⏸  已暫停。你可以自己操作遊戲，"
                         "按空白鍵繼續（按 q 結束）。")
             else:
@@ -209,8 +234,10 @@ def main():
 
     def wait_while_paused():
         """暫停期間什麼都不做，只等按鍵。回傳 False 代表要結束。"""
-        while state["paused"] and running:
+        while ctl.paused and running:
             if os.path.exists(STOP_FILE):
+                return False
+            if ctl.stop_requested:
                 return False
             if not handle_keys():
                 return False
@@ -223,7 +250,7 @@ def main():
         while running and time.time() < end:
             if os.path.exists(STOP_FILE):
                 return
-            if not handle_keys() or state["paused"]:
+            if not handle_keys() or ctl.paused or ctl.stop_requested:
                 return          # 交給主迴圈處理暫停或結束
             time.sleep(min(0.1, max(0.0, end - time.time())))
 
@@ -250,7 +277,11 @@ def main():
             if not handle_keys():
                 reason = "使用者按鍵結束"
                 break
-            if state["paused"]:
+            if ctl.stop_requested:
+                reason = "從控制頁按了結束"
+                log.say("從控制頁收到結束，收工。")
+                break
+            if ctl.paused:
                 paused_at = time.time()
                 if not wait_while_paused():
                     reason = "使用者在暫停中結束"
@@ -284,6 +315,8 @@ def main():
             waking_for_skip = False
             s = classify(items, w, h)
             stats[s.state] = stats.get(s.state, 0) + 1
+            ctl.update(state=HUMAN_STATE.get(s.state, s.state),
+                       attempts=attempts, note=s.note)
 
             # ---- 通關事件：以「點了下一關」為準 ----
             # 不拿關卡編號當通關訊號。OCR 偶爾會把 885 讀成 835 這種
@@ -298,6 +331,7 @@ def main():
                 log.say(f"🎉 第 {label} 關通過！"
                         f"花了 {human_time(took)}，試了 {attempts} 次")
                 log.clear(label, took, attempts)
+                ctl.add_clear(label, took, attempts)
                 cleared.append(victory_stage)
                 stage_started = time.time()
                 attempts = 0
@@ -312,6 +346,7 @@ def main():
                     log.line(f"[注意] 關卡編號從 {stage_seen} 變成 {cur}，"
                              f"不是 +1。可能是辨識誤差或一次過了多關。")
                 stage_seen = cur
+                ctl.update(stage=cur)
                 log.say(f"── 目前第 {cur} 關 ──")
                 if args.stop_after_stage and cur >= args.stop_after_stage:
                     reason = f"已達第 {cur} 關"
@@ -377,6 +412,8 @@ def main():
                         victory_pending = True
                         victory_stage = stage_seen
                     log.say(f"{s.state:<13} 點了「{label}」@螢幕({gx},{gy})")
+                    ctl.update(last_action=f"點了「{label}」",
+                               last_action_at=time.time())
                     log.action(s.state, s.stage, label, (gx, gy), s.note)
                 pending = (s.state, time.time() + wait)
                 time.sleep(MIN_SETTLE)
