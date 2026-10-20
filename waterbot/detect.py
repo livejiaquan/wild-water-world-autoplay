@@ -32,6 +32,14 @@ NEXT_BTN      = ("下一關", "下一关", "下一闕", "下一闢", "下一關"
                  "繼續挑戰", "继续挑战")
 SKIP_BTN      = ("跳過", "跳过")
 START_BTN     = ("開戰", "开战", "開戦")
+MAIN_BTN      = ("闖關", "闯关")
+
+# 主畫面左下角那排導覽列的「闖關」。這顆按鈕跟別的不一樣：主畫面上
+# 還有「商城」和「首充」，點錯就是儲值頁。所以除了文字要對，還要求
+# 它真的出現在左下角 —— 實測主畫面上「闖關」在 (0.09, 0.99)，
+# 而「商城」在 (0.93, 0.19)、「首充」在 (0.93, 0.58)，離得夠遠。
+# 範圍放寬是為了容納不同視窗比例；即使判斷失準也只是不點，不會點錯。
+MAIN_BTN_REGION = (0.00, 0.35, 0.90, 1.00)   # x_min, x_max, y_min, y_max（比例）
 
 
 def _norm(s: str) -> str:
@@ -139,6 +147,15 @@ def classify(ocr_items, w, h) -> Screen:
     hit = _find(ocr_items, START_BTN)
     if hit:
         return Screen("STAGE_SELECT", (hit[1], hit[2]), stage)
+
+    # 6. 主畫面（基地）→ 左下角的「闖關」，進去才會看到開戰
+    hit = _find(ocr_items, MAIN_BTN)
+    if hit:
+        x0, x1, y0, y1 = MAIN_BTN_REGION
+        if x0 * w <= hit[1] <= x1 * w and y0 * h <= hit[2] <= y1 * h:
+            return Screen("MAIN_MENU", (hit[1], hit[2]), stage)
+        return Screen("UNKNOWN", None, stage,
+                      f"看到「{hit[0]}」但不在左下角導覽列的位置，不敢點")
 
     # 6. 其他
     if _find(ocr_items, ("LOADING", "LOADINCL", "載入中", "加载中"), slack=3):

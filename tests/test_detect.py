@@ -52,6 +52,9 @@ CASES = [
     ("victory_garbled_banner.jpg", "VICTORY", (723, 531),
      "橫幅被 OCR 讀成「挑郫膀朻」時，仍要靠按鈕認出這是勝利畫面"),
 
+    ("main_menu.jpg", "MAIN_MENU", (87, 2003),
+     "主畫面要認得左下角導覽列的「闖關」，才能自己進去推關"),
+
     # 以下三張都曾被誤判成「該點」的畫面，必須維持在不動作的狀態。
     ("notclick_purchase.jpg", "UNKNOWN", None,
      "648 元儲值畫面：「甙战」曾被當成「开战」按鈕"),
@@ -64,6 +67,31 @@ CASES = [
 TOL = 12   # 座標容許誤差（像素）
 
 
+def main_btn_region():
+    """「闖關」的位置保險：主畫面上還有「商城」和「首充」，點錯就是儲值頁。
+
+    所以除了文字對，還要求它出現在左下角導覽列。這裡直接餵假的 OCR 結果，
+    確認同樣的文字出現在危險位置時會被拒絕。
+    """
+    fails = []
+    print("\n── 「闖關」必須出現在左下角才算 ──")
+    w, h = 1000, 2000
+    probes = [
+        (0.09, 0.99, "MAIN_MENU", "左下角導覽列，正常位置"),
+        (0.93, 0.19, "UNKNOWN", "商城的位置"),
+        (0.93, 0.58, "UNKNOWN", "首充的位置"),
+        (0.50, 0.50, "UNKNOWN", "畫面正中央"),
+    ]
+    for fx, fy, want, why in probes:
+        got = classify([("闖關", int(fx * w), int(fy * h), 1.0)], w, h)
+        ok = got.state == want
+        print(f"[{'ok  ' if ok else 'FAIL'}] x={fx:.2f} y={fy:.2f} -> "
+              f"{got.state:<13} ({why})")
+        if not ok:
+            fails.append(f"闖關在 ({fx},{fy}) 判成 {got.state}，預期 {want}")
+    return fails
+
+
 def band_agrees():
     """主迴圈在等結果時只掃畫面下方那一條來搶速度。
 
@@ -74,7 +102,8 @@ def band_agrees():
     fails = []
     print("\n── 只掃下方按鈕區時，判讀要和掃全張一致 ──")
     for name, want_state, want_click, _ in CASES:
-        if want_state not in ("DEFEAT", "VICTORY", "SKIPPABLE", "STAGE_SELECT"):
+        if want_state not in ("DEFEAT", "VICTORY", "SKIPPABLE",
+                              "STAGE_SELECT", "MAIN_MENU"):
             continue
         img = cv2.imread(os.path.join(FIX, name))
         h, w = img.shape[:2]
@@ -135,6 +164,7 @@ def run():
                 print(f"        !! {b}")
             fails.append(f"{name}: " + "; ".join(bad))
 
+    fails += main_btn_region()
     fails += band_agrees()
 
     print()

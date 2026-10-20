@@ -30,7 +30,7 @@ nothing.
 |---|---|
 | The game runs in a **window** on this Mac | Window title contains「水世界」. Not minimised, and not covered by other windows (when covered it can still see the button but will not click) |
 | The game UI language is **Chinese** | It recognises the on-screen text 再戰一次 / 下一關 / 跳過 / 開戰, in Traditional or Simplified. Other languages will not work |
-| You are on the **stage screen** (the 開戰 button) or mid-battle | It takes over from there; starting on a result screen also works |
+| You are on the **main screen**, the **stage screen** (the 開戰 button) or mid-battle | From the main screen it taps 闖關 in the bottom-left nav itself; starting on a result screen also works |
 | Your team, stamina and resources are ready | It does not change teams, refill stamina or touch the shop |
 
 On a screen it does not recognise (pop-ups, events, purchase screens, story
@@ -121,9 +121,10 @@ flowchart TD
     C -->|跳過 / Skip| G[SKIPPABLE]
     C -->|N秒後可跳過戰鬥| H[BATTLE]
     C -->|開戰 / Start| I[STAGE_SELECT]
+    C -->|闖關 in the bottom-left nav| R[MAIN_MENU]
     C -->|none of the above| J[UNKNOWN]
 
-    D & E & G & I --> K{Is the button<br/>occluded?}
+    D & E & G & I & R --> K{Is the button<br/>occluded?}
     K -->|yes| L[Skip this cycle<br/>log it]
     K -->|no| M[Post one click<br/>restore cursor]
 
