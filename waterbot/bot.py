@@ -44,9 +44,9 @@ ACTIONS = {
 #   * 剛點完「跳過」→ 結果不是勝利就是失敗，幾乎立刻出現，要盯緊。
 #   * 戰鬥中還在倒數 → 還要幾秒是畫面上寫好的，沒必要一直看，
 #     直接睡到快結束再醒來，省下大量 OCR。
-FAST_POLL = 0.15      # 剛點完、等畫面轉場時的複查間隔
-MIN_SETTLE = 0.25     # 點完至少先等這麼久再看，避免看到點擊前的殘影
-COUNTDOWN_MARGIN = 0.4   # 倒數結束前這麼久就醒來，確保不錯過跳過鍵
+FAST_POLL = 0.12      # 剛點完、等畫面轉場時的複查間隔
+MIN_SETTLE = 0.15     # 點完至少先等這麼久再看，避免看到點擊前的殘影
+COUNTDOWN_MARGIN = 0.25  # 倒數結束前這麼久就醒來，確保不錯過跳過鍵
 NAP_CHUNK = 0.5          # 長時間等待切成小段，Ctrl-C 和 STOP 才會即時生效
 MAX_NAP = 3.0            # 倒數再長也不會一次睡超過這麼久 —— 戰鬥有可能
                          # 在倒數結束前就分出勝負，睡滿會慢一拍
@@ -153,6 +153,7 @@ def main():
     stage_votes = deque(maxlen=STAGE_VOTES)   # 最近幾次讀到的關卡編號
     victory_pending = False       # 點了「下一關」，還在等畫面離開勝利頁
     victory_stage = None          # 點下去的當下，確認過的關卡編號
+    waking_for_skip = False       # 這一圈是倒數睡醒的，直接找「跳過」
     reason = "正常結束"
     last_shot = {}        # 狀態 -> 上次存圖時間，避免同一種狀況狂存
     pending = None        # (剛點過的狀態, 等待截止時間)
@@ -207,8 +208,12 @@ def main():
 
             scale = img_scale(win, img)
             h, w = img.shape[:2]
-            # 剛點完、正在等畫面轉場時只掃下方按鈕區，搶那幾十毫秒
-            items = read(img, band_only=bool(pending))
+            # 只掃下方按鈕區的時機有兩個，都是「知道要找哪顆按鈕」的時候：
+            #   * 剛點完，在等畫面轉場（結果鍵在下方）
+            #   * 剛從倒數結束醒來，在等「跳過」出現（也在下方）
+            # 兩者都省掉約 50ms 的 OCR。
+            items = read(img, band_only=bool(pending) or waking_for_skip)
+            waking_for_skip = False
             s = classify(items, w, h)
             stats[s.state] = stats.get(s.state, 0) + 1
 
@@ -319,8 +324,11 @@ def main():
             # 戰鬥中且畫面寫著還要幾秒才能跳過：那幾秒是固定的，
             # 直接睡到快結束，省掉中間每一次 OCR。
             if s.state == "BATTLE" and s.countdown:
-                nap(min(MAX_NAP,
-                        max(FAST_POLL, s.countdown - COUNTDOWN_MARGIN)))
+                wait_for = s.countdown - COUNTDOWN_MARGIN
+                nap(min(MAX_NAP, max(FAST_POLL, wait_for)))
+                # 睡滿整個倒數才算是「為了跳過而醒」；被 MAX_NAP 截斷的
+                # 中途醒來還在倒數中，下一圈仍要掃全張。
+                waking_for_skip = wait_for <= MAX_NAP
             else:
                 time.sleep(args.interval)
 
