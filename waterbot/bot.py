@@ -46,7 +46,6 @@ ACTIONS = {
 #     直接睡到快結束再醒來，省下大量 OCR。
 FAST_POLL = 0.12      # 剛點完、等畫面轉場時的複查間隔
 MIN_SETTLE = 0.15     # 點完至少先等這麼久再看，避免看到點擊前的殘影
-COUNTDOWN_MARGIN = 0.25  # 倒數結束前這麼久就醒來，確保不錯過跳過鍵
 NAP_CHUNK = 0.5          # 長時間等待切成小段，Ctrl-C 和 STOP 才會即時生效
 MAX_NAP = 3.0            # 倒數再長也不會一次睡超過這麼久 —— 戰鬥有可能
                          # 在倒數結束前就分出勝負，睡滿會慢一拍
@@ -61,6 +60,23 @@ BAND_TOP = 0.68
 # 正確值一定佔多數。用已經在做的那些幀投票，不需要額外 OCR，所以不會變慢。
 STAGE_VOTES = 7          # 參考最近幾次讀數
 STAGE_MIN_VOTES = 2      # 至少要有幾票才算數
+
+
+def next_wait(screen, idle_interval):
+    """決定下一次什麼時候看畫面，回傳 (要等幾秒, 下一圈是否只掃下方條)。
+
+    戰鬥中畫面會寫「還要 N 秒才能跳過」，但那個 N 是整數：顯示「1 秒」時，
+    真實剩餘落在 0 到 1 秒之間。所以**最後一秒不能用睡的** ——
+    睡下去最壞會比跳過鍵晚 0.75 秒才發現，比固定輪詢還慢。
+    改成還早時睡掉（省 OCR），剩最後一秒才密集盯著（搶反應）。
+    """
+    if screen.state == "BATTLE" and screen.countdown:
+        if screen.countdown >= 2:
+            wait = min(MAX_NAP, screen.countdown - 1.0)
+            # 被 MAX_NAP 截斷代表醒來時還在倒數中，那一圈仍要掃全張
+            return wait, (screen.countdown - 1.0) <= MAX_NAP
+        return FAST_POLL, True          # 最後一秒，緊盯著跳過鍵
+    return idle_interval, False
 
 
 def confirmed_stage(votes):
@@ -323,14 +339,11 @@ def main():
             # ---- 依畫面決定下一次什麼時候看 ----
             # 戰鬥中且畫面寫著還要幾秒才能跳過：那幾秒是固定的，
             # 直接睡到快結束，省掉中間每一次 OCR。
-            if s.state == "BATTLE" and s.countdown:
-                wait_for = s.countdown - COUNTDOWN_MARGIN
-                nap(min(MAX_NAP, max(FAST_POLL, wait_for)))
-                # 睡滿整個倒數才算是「為了跳過而醒」；被 MAX_NAP 截斷的
-                # 中途醒來還在倒數中，下一圈仍要掃全張。
-                waking_for_skip = wait_for <= MAX_NAP
+            wait_for, waking_for_skip = next_wait(s, args.interval)
+            if wait_for > NAP_CHUNK:
+                nap(wait_for)
             else:
-                time.sleep(args.interval)
+                time.sleep(wait_for)
 
     except Exception as e:                      # noqa: BLE001
         reason = f"程式出錯: {type(e).__name__}: {e}"
