@@ -48,14 +48,22 @@ uploaded and no model needs downloading.
 
 ## Installation
 
+No tools need to be installed first — not git, not Xcode, not Python:
+
 ```bash
-git clone https://github.com/livejiaquan/wild-water-world-autoplay.git
-cd wild-water-world-autoplay
-./install.command
+cd ~/Downloads && curl -fsSL https://github.com/livejiaquan/wild-water-world-autoplay/archive/refs/heads/main.tar.gz | tar xz && open wild-water-world-autoplay-main
 ```
 
-Or, for non-technical users: download the ZIP, unpack it, and double-click
-`install.command`.
+Then double-click `install.command` in the folder that opens, and
+`update.command` later to upgrade in place.
+
+`git` is deliberately not used: on macOS it is a shim for the Xcode Command
+Line Tools, so invoking it on a clean machine prompts for a 1-2GB download.
+`curl` and `tar` are real system binaries. Fetching this way also avoids the
+quarantine flag a browser download carries, so Gatekeeper does not block the
+`.command` files, and their executable bits survive the tarball.
+
+With git available, `git clone` and `git pull` work as usual.
 
 The installer detects whether a usable Python is present and, if not,
 provisions a self-contained one via [uv](https://github.com/astral-sh/uv).

@@ -33,6 +33,15 @@ English: **[README.md](README.md)**
 
 ## 快速開始
 
+**不需要安裝 git、Xcode、Python，什麼都不用先裝。**
+打開「終端機」（在 應用程式 → 工具程式 裡），貼上這一行按 Enter：
+
+```bash
+cd ~/Downloads && curl -fsSL https://github.com/livejiaquan/wild-water-world-autoplay/archive/refs/heads/main.tar.gz | tar xz && open wild-water-world-autoplay-main
+```
+
+它會把資料夾下載到「下載項目」並自動打開。接著：
+
 不懂程式也沒關係，三步都用滑鼠：
 
 | 步驟 | 做什麼 |
@@ -43,13 +52,26 @@ English: **[README.md](README.md)**
 
 停止：按 `Control + C`，或直接關掉視窗。
 
+以後要更新到最新版，雙擊 **`update.command`** 就好 —— 一樣不需要 git，
+而且不會動到已裝好的環境和你的通關紀錄。
+
 哪裡怪怪的就雙擊 **`check.command`**，它會說明哪裡不對、該怎麼辦。
 
 <details>
 <summary><b>出現「檔案已損毀，無法打開」？</b></summary>
 
-從網路下載的 ZIP 會被 macOS 鎖住。在 `install.command` 上**按右鍵 → 打開**，
-再按一次「打開」即可，只需做這一次。用 `git clone` 下載則不會有這個問題。
+從瀏覽器下載的 ZIP 會被 macOS 鎖住。用上面那行終端機指令下載就不會有這個問題。
+
+如果你已經用瀏覽器下載了，在 `install.command` 上**按右鍵 → 打開**，
+再按一次「打開」即可，只需做這一次。
+</details>
+
+<details>
+<summary><b>為什麼不用 git？</b></summary>
+
+因為 macOS 上的 `git` 其實是 Xcode 命令列工具的轉接殼 —— 在沒裝過開發工具的
+電腦上執行它，會跳出要你下載 1～2GB 工具的視窗。`curl` 和 `tar` 則是系統
+內建的真程式，所以用它們下載，什麼都不用先裝。
 </details>
 
 <details>
