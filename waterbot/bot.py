@@ -22,6 +22,7 @@ import sys
 import time
 
 from detect import classify
+from keys import Keys
 from ocr import ocr
 from runlog import RunLog, human_time
 from winio import find_windows, grab, click_bg, img_scale, covered_by
@@ -155,7 +156,14 @@ def main():
 
     log.say(f"盯著：[{win['owner']}] {win['title']} "
             f"{win['w']}x{win['h']} @({win['x']},{win['y']})")
-    log.say(f"每 {args.interval}s 看一次。停止：Ctrl-C 或 touch STOP")
+    kb = Keys()
+    state = {"paused": False}
+
+    log.say(f"每 {args.interval}s 看一次。")
+    if kb.ok:
+        log.say("按 空白鍵 暫停／繼續，按 q 結束。")
+    else:
+        log.say("停止：Ctrl-C 或 touch STOP")
     if args.dry_run:
         log.say("** 乾跑模式：只會說它想點哪裡，不會真的點 **")
     log.say(f"紀錄寫在 {OUT}/run.log")
@@ -181,13 +189,43 @@ def main():
         y0 = int(img.shape[0] * BAND_TOP)
         return [(t, x, y + y0, c) for t, x, y, c in ocr(img[y0:])]
 
+    def handle_keys():
+        """處理按鍵。回傳 False 代表使用者要結束。"""
+        k = kb.get()
+        if k is None:
+            return True
+        if k == "q":
+            log.say("按了 q，收工。")
+            return False
+        if k in (" ", "p"):
+            state["paused"] = not state["paused"]
+            if state["paused"]:
+                log.say("⏸  已暫停。你可以自己操作遊戲，"
+                        "按空白鍵繼續（按 q 結束）。")
+            else:
+                kb.drain()
+                log.say("▶️  繼續。")
+        return True
+
+    def wait_while_paused():
+        """暫停期間什麼都不做，只等按鍵。回傳 False 代表要結束。"""
+        while state["paused"] and running:
+            if os.path.exists(STOP_FILE):
+                return False
+            if not handle_keys():
+                return False
+            time.sleep(0.08)
+        return True
+
     def nap(seconds):
         """睡一段時間，但切成小段，讓 Ctrl-C 和 STOP 檔能即時生效。"""
         end = time.time() + seconds
         while running and time.time() < end:
             if os.path.exists(STOP_FILE):
                 return
-            time.sleep(min(NAP_CHUNK, max(0.0, end - time.time())))
+            if not handle_keys() or state["paused"]:
+                return          # 交給主迴圈處理暫停或結束
+            time.sleep(min(0.1, max(0.0, end - time.time())))
 
     def maybe_snapshot(tag, img, items, note, every=60.0):
         """同一種狀況最多每 every 秒留一張圖。
@@ -208,6 +246,20 @@ def main():
                 reason = "看到 STOP 檔"
                 log.say("收工。")
                 break
+
+            if not handle_keys():
+                reason = "使用者按鍵結束"
+                break
+            if state["paused"]:
+                paused_at = time.time()
+                if not wait_while_paused():
+                    reason = "使用者在暫停中結束"
+                    break
+                # 暫停的時間不算在「卡住」和「這一關花多久」裡面
+                paused_for = time.time() - paused_at
+                last_change += paused_for
+                stage_started += paused_for
+                continue
 
             win = pick_window(args.app)   # 視窗可能被移動或縮放，每圈重抓
             if win is None:
@@ -350,6 +402,7 @@ def main():
         log.say(f"程式出錯了：{e}")
         log.say(f"詳細堆疊寫在 {OUT}/run.log")
         log.exception("主迴圈", e)
+        kb.restore()
         log.finish(stats, reason)
         return 2
 
@@ -366,6 +419,7 @@ def main():
     log.say("統計： " + "  ".join(f"{k}×{v}" for k, v in
                                 sorted(stats.items(), key=lambda x: -x[1])))
     log.say(f"完整紀錄：{OUT}/run.log")
+    kb.restore()
     log.finish(stats, reason)
     return 0
 
