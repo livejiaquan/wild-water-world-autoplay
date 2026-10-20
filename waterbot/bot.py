@@ -22,7 +22,7 @@ import time
 
 from detect import classify
 from ocr import ocr
-from runlog import RunLog
+from runlog import RunLog, human_time
 from winio import find_windows, grab, click_bg, img_scale, covered_by
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -128,9 +128,13 @@ def main():
     if args.dry_run:
         log.say("** 乾跑模式：只會說它想點哪裡，不會真的點 **")
     log.say(f"紀錄寫在 {OUT}/run.log")
+    log.say(f"通關紀錄：{OUT}/通關紀錄.txt")
 
     last_state, last_change = None, time.time()
     click_times, stage_seen, stats = [], None, {}
+    stage_started = time.time()   # 目前這一關是什麼時候開始的
+    attempts = 0                  # 這一關失敗重試了幾次
+    cleared = []                  # 這次執行通過了哪幾關
     reason = "正常結束"
     last_shot = {}        # 狀態 -> 上次存圖時間，避免同一種狀況狂存
     pending = None        # (剛點過的狀態, 等待截止時間)
@@ -190,8 +194,19 @@ def main():
             s = classify(items, w, h)
             stats[s.state] = stats.get(s.state, 0) + 1
 
+            # ---- 關卡進度：編號變大就代表上一關過了 ----
+            # 用編號變化判斷，而不是盯勝利畫面：勝利畫面不一定讀得到
+            # 關卡編號，但戰鬥畫面每一幀都有，所以這個訊號可靠得多。
             if s.stage and s.stage != stage_seen:
+                if stage_seen is not None and s.stage > stage_seen:
+                    took = time.time() - stage_started
+                    log.say(f"🎉 第 {stage_seen} 關通過！"
+                            f"花了 {human_time(took)}，試了 {attempts} 次")
+                    log.clear(stage_seen, took, attempts)
+                    cleared.append(stage_seen)
                 stage_seen = s.stage
+                stage_started = time.time()
+                attempts = 0
                 log.say(f"── 目前第 {s.stage} 關 ──")
                 if args.stop_after_stage and s.stage >= args.stop_after_stage:
                     reason = f"已達第 {s.stage} 關"
@@ -251,6 +266,8 @@ def main():
                 else:
                     gx, gy = click_bg(win, s.click[0], s.click[1], scale)
                     click_times.append(time.time())
+                    if s.state == "DEFEAT":
+                        attempts += 1
                     log.say(f"{s.state:<13} 點了「{label}」@螢幕({gx},{gy})")
                     log.action(s.state, s.stage, label, (gx, gy), s.note)
                 pending = (s.state, time.time() + wait)
@@ -280,6 +297,12 @@ def main():
         log.finish(stats, reason)
         return 2
 
+    if cleared:
+        log.say(f"這次通過 {len(cleared)} 關："
+                f"第 {cleared[0]} 關 → 第 {cleared[-1]} 關")
+        log.say(f"明細看 {OUT}/通關紀錄.txt")
+    else:
+        log.say("這次沒有通過新的關卡。")
     log.say("統計： " + "  ".join(f"{k}×{v}" for k, v in
                                 sorted(stats.items(), key=lambda x: -x[1])))
     log.say(f"完整紀錄：{OUT}/run.log")

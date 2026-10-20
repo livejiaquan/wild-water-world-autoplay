@@ -218,12 +218,29 @@ than guess:
 - Automatic stop after 5 minutes on an unchanging screen.
 - Automatic stop if the game window disappears.
 
+## Progress record
+
+Some stages take a long time, so each clear is appended to
+`waterbot/out/通關紀錄.txt`:
+
+```
+關卡    通過時間            花了多久    試了幾次
+────────────────────────
+876     10/20 22:15:41      4分12秒     18 次
+877     10/20 22:22:11      6分30秒     27 次
+```
+
+A clear is recognised by the **stage number increasing**, not by the victory
+screen: the victory screen does not always render the stage number legibly,
+while every battle frame carries it.
+
 ## Diagnostics
 
 Everything lands in `waterbot/out/`:
 
 | File | Contents |
 |---|---|
+| `通關紀錄.txt` | **The one meant for people**: which stage, when it was cleared, how long it took, how many attempts |
 | `run.log` | Chronological log. **Unrecognised screens dump every OCR string with its position and confidence.** |
 | `run.csv` | One row per action, openable in Numbers or Excel |
 | `shots/` | Screenshots captured when confused or stuck |

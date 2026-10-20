@@ -14,6 +14,29 @@ from datetime import datetime
 import cv2
 
 
+def _width(s):
+    """字串在等寬終端機裡佔幾格。中日文字是兩格，不是一格。"""
+    import unicodedata
+    return sum(2 if unicodedata.east_asian_width(c) in "WF" else 1 for c in s)
+
+
+def pad(s, cols):
+    """補空白到指定格數，中文字算兩格，表格才對得齊。"""
+    return s + " " * max(0, cols - _width(s))
+
+
+def human_time(seconds):
+    """把秒數寫成人看得懂的樣子：90 -> 1分30秒。"""
+    seconds = int(round(seconds))
+    if seconds < 60:
+        return f"{seconds}秒"
+    m, s = divmod(seconds, 60)
+    if m < 60:
+        return f"{m}分{s}秒" if s else f"{m}分"
+    h, m = divmod(m, 60)
+    return f"{h}小時{m}分" if m else f"{h}小時"
+
+
 class RunLog:
     def __init__(self, outdir):
         self.dir = outdir
@@ -79,6 +102,28 @@ class RunLog:
         self.line(f"[例外] 在 {where}: {type(exc).__name__}: {exc}")
         for ln in traceback.format_exc().rstrip().splitlines():
             self.line(f"    {ln}")
+
+    # ---- 通關紀錄（給人看的，不是給程式看的）-----------------------
+    def clear(self, stage, seconds, attempts):
+        """記下一關通過了，連同花多久、試了幾次。
+
+        單獨寫一個檔案，格式排整齊、用詞白話，讓不看 log 的人
+        也能一眼知道卡在哪一關、哪一關是什麼時候過的。
+        """
+        path = os.path.join(self.dir, "通關紀錄.txt")
+        new = not os.path.exists(path) or os.path.getsize(path) == 0
+        with open(path, "a", encoding="utf-8") as f:
+            if new:
+                f.write(pad("關卡", 8) + pad("通過時間", 20)
+                        + pad("花了多久", 12) + "試了幾次\n")
+                f.write("─" * 24 + "\n")
+            f.write(pad(str(stage), 8)
+                    + pad(f"{datetime.now():%m/%d %H:%M:%S}", 20)
+                    + pad(human_time(seconds), 12)
+                    + f"{attempts} 次\n")
+        self.line(f"[通關] 第{stage}關 耗時{human_time(seconds)} "
+                  f"嘗試{attempts}次")
+        return path
 
     # ---- 收尾 -----------------------------------------------------
     def finish(self, stats, reason):
