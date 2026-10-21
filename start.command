@@ -10,8 +10,17 @@ fi
 
 clear
 echo "${BOLD}瘋狂水世界 自動刷關${OFF}"
-echo "按 空白鍵 暫停／繼續，按 q 結束。"
+echo "控制頁會自動在瀏覽器打開，可以在那裡暫停／繼續／看通關紀錄。"
+echo "也可以在這個視窗按 空白鍵 暫停、按 q 結束。"
 echo
+
+# 等程式把伺服器起來，再把控制頁打開
+( for i in $(seq 1 40); do
+    if curl -s -o /dev/null "http://127.0.0.1:8777/" 2>/dev/null; then
+        open "http://127.0.0.1:8777/"; break
+    fi
+    sleep 0.5
+  done ) &
 
 ./waterbot/.venv/bin/python waterbot/bot.py "$@"
 
