@@ -16,6 +16,8 @@
 """
 import argparse
 import os
+
+import cv2
 from collections import Counter, deque
 import signal
 import sys
@@ -23,7 +25,6 @@ import time
 
 from detect import classify
 from keys import Keys
-import webui
 from ocr import ocr
 from runlog import RunLog, human_time
 from winio import find_windows, grab, click_bg, img_scale, covered_by
@@ -46,7 +47,7 @@ ACTIONS = {
 #   * 剛點完「跳過」→ 結果不是勝利就是失敗，幾乎立刻出現，要盯緊。
 #   * 戰鬥中還在倒數 → 還要幾秒是畫面上寫好的，沒必要一直看，
 #     直接睡到快結束再醒來，省下大量 OCR。
-# 畫面狀態的白話說法，給控制頁顯示用
+# 畫面狀態的白話說法，印在終端機上給人看
 HUMAN_STATE = {
     "BATTLE": "戰鬥中",
     "SKIPPABLE": "準備跳過",
@@ -58,6 +59,28 @@ HUMAN_STATE = {
     "NEEDS_HUMAN": "看不清按鈕，等一下",
     "UNKNOWN": "沒看過的畫面，沒動作",
 }
+
+# 遊戲視窗可能叫中文也可能叫英文，預設都試。
+# 找不到時不自動猜 —— 猜錯會點到別的 App，寧可請人確認。
+APP_HINTS = ("水世界", "Water World", "WaterWorld", "Wild Water")
+
+
+def looks_like_game(w):
+    """直式、夠大的視窗才像手機遊戲。只拿來提示，不拿來自動選。"""
+    return w["h"] > w["w"] * 1.2 and w["w"] >= 300
+
+
+class Control:
+    """暫停與結束的旗標。鍵盤那邊改它，主迴圈這邊讀它。"""
+
+    def __init__(self):
+        self.paused = False
+        self.stop_requested = False
+
+    def toggle_pause(self):
+        self.paused = not self.paused
+        return self.paused
+
 
 FAST_POLL = 0.12      # 剛點完、等畫面轉場時的複查間隔
 MIN_SETTLE = 0.15     # 點完至少先等這麼久再看，避免看到點擊前的殘影
@@ -115,35 +138,92 @@ def pick_window(name_hint, verbose=False):
     if verbose:
         print("目前畫面上夠大的視窗：")
         for w in wins:
+            mark = "  <- 形狀像手機遊戲" if looks_like_game(w) else ""
             print(f"  [{w['owner']}] {w['title']}  {w['w']}x{w['h']} "
-                  f"@({w['x']},{w['y']})  pid={w['pid']}")
+                  f"@({w['x']},{w['y']})  pid={w['pid']}{mark}")
+    hints = [h.strip().lower() for h in name_hint.split(",") if h.strip()]
     cand = [w for w in wins
-            if name_hint.lower() in (w["owner"] + " " + w["title"]).lower()]
+            if any(h in (w["owner"] + " " + w["title"]).lower() for h in hints)]
     if not cand:
         return None
     cand.sort(key=lambda w: (w["h"] <= w["w"], -w["w"] * w["h"]))  # 直式優先
     return cand[0]
 
 
+def look(app_hint):
+    """印出現在遊戲畫面上讀到的所有文字與判斷結果，並存一張圖。
+
+    辨識不出來的時候，這是最快找出原因的方式：可以直接看到
+    OCR 到底讀到什麼、程式判成什麼、以及按鈕被認在哪個位置。
+    """
+    win = pick_window(app_hint)
+    if not win:
+        print(f"找不到名稱包含 {app_hint} 的視窗。\n")
+        pick_window("", verbose=True)
+        maybe = [w for w in find_windows(min_size=300) if looks_like_game(w)]
+        if maybe:
+            print("\n這些視窗的形狀像手機遊戲：")
+            for w in maybe:
+                print(f"  [{w['owner']}] {w['title']}")
+            print(f"\n如果遊戲是上面其中一個，用它的名字再試一次，例如：")
+            print(f"  bot.py --look --app \"{maybe[0]['owner']}\"")
+        else:
+            print("\n沒看到形狀像手機遊戲的視窗。請確認遊戲開著、"
+                  "而且沒有縮到最小。")
+        return 1
+
+    print(f"視窗：[{win['owner']}] {win['title']} "
+          f"{win['w']}x{win['h']} @({win['x']},{win['y']})")
+    img = grab(win)
+    h, w = img.shape[:2]
+    print(f"截圖：{w}x{h}（每個視窗點 = {img_scale(win, img):.0f} 像素）\n")
+
+    items = ocr(img)
+    print(f"讀到 {len(items)} 段文字（依由上而下排列）：")
+    for text, cx, cy, conf in sorted(items, key=lambda r: r[2]):
+        print(f"  ({cx:5d},{cy:5d})  x={cx/w:.3f} y={cy/h:.3f}  "
+              f"conf={conf:.2f}  {text!r}")
+
+    s = classify(items, w, h)
+    print(f"\n判斷結果：{s.state}（{HUMAN_STATE.get(s.state, '')}）")
+    if s.stage:
+        print(f"關卡編號：{s.stage}")
+    if s.click:
+        print(f"會點這裡：{s.click}  "
+              f"x={s.click[0]/w:.3f} y={s.click[1]/h:.3f}")
+    if s.note:
+        print(f"備註：{s.note}")
+
+    os.makedirs(OUT, exist_ok=True)
+    path = os.path.join(OUT, "look.png")
+    shot = img.copy()
+    if s.click:
+        cv2.circle(shot, s.click, int(h * 0.02), (0, 0, 255), 3)
+    cv2.imwrite(path, shot)
+    print(f"\n畫面已存到 {path}（紅圈是它打算點的位置）")
+    if s.state == "UNKNOWN":
+        print("\n判不出來的話，把上面這整段和那張圖一起回報，就能找出原因。")
+    return 0
+
+
 def build_parser():
     ap = argparse.ArgumentParser(
         description="瘋狂水世界 自動刷關",
         formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("--app", default="水世界", help="遊戲視窗名稱關鍵字")
+    ap.add_argument("--app", default=",".join(APP_HINTS),
+                    help="遊戲視窗名稱關鍵字，可用逗號分隔多個")
     ap.add_argument("--interval", type=float, default=0.5, help="每幾秒看一次")
     ap.add_argument("--dry-run", action="store_true", help="只印不點")
     ap.add_argument("--list", action="store_true", help="列出所有視窗後結束")
     ap.add_argument("--check", action="store_true", help="檢查環境與權限後結束")
+    ap.add_argument("--look", action="store_true",
+                    help="看一眼現在的遊戲畫面：印出讀到的每一行字和判斷結果")
     ap.add_argument("--max-stuck", type=float, default=300,
                     help="同一個畫面卡住幾秒就停（預設 300）")
     ap.add_argument("--max-clicks-per-min", type=int, default=20,
                     help="每分鐘最多點幾下，超過視為失控（預設 20）")
     ap.add_argument("--stop-after-stage", type=int, default=None,
                     help="打到第幾關就收工")
-    ap.add_argument("--no-web", action="store_true",
-                    help="不要開瀏覽器控制頁")
-    ap.add_argument("--port", type=int, default=8777,
-                    help="控制頁的埠號（預設 8777）")
     return ap
 
 
@@ -156,6 +236,8 @@ def main():
     if args.check:
         import preflight
         return preflight.main(args.app)
+    if args.look:
+        return look(args.app)
 
     signal.signal(signal.SIGINT, on_sigint)
     os.makedirs(OUT, exist_ok=True)
@@ -166,10 +248,7 @@ def main():
     log.line(f"參數: {vars(args)}")
 
     kb = Keys()
-    ctl = webui.Control()
-    web_url = None
-    if not args.no_web:
-        web_url, _srv = webui.start(ctl, args.port)
+    ctl = Control()
 
 
     win = pick_window(args.app)
@@ -181,10 +260,7 @@ def main():
 
     log.say(f"盯著：[{win['owner']}] {win['title']} "
             f"{win['w']}x{win['h']} @({win['x']},{win['y']})")
-    ctl.update(window=f"{win['owner']} {win['w']}x{win['h']}")
     log.say(f"每 {args.interval}s 看一次。")
-    if web_url:
-        log.say(f"控制頁：{web_url}")
     if kb.ok:
         log.say("按 空白鍵 暫停／繼續，按 q 結束。")
     else:
@@ -315,8 +391,6 @@ def main():
             waking_for_skip = False
             s = classify(items, w, h)
             stats[s.state] = stats.get(s.state, 0) + 1
-            ctl.update(state=HUMAN_STATE.get(s.state, s.state),
-                       attempts=attempts, note=s.note)
 
             # ---- 通關事件：以「點了下一關」為準 ----
             # 不拿關卡編號當通關訊號。OCR 偶爾會把 885 讀成 835 這種
@@ -331,7 +405,6 @@ def main():
                 log.say(f"🎉 第 {label} 關通過！"
                         f"花了 {human_time(took)}，試了 {attempts} 次")
                 log.clear(label, took, attempts)
-                ctl.add_clear(label, took, attempts)
                 cleared.append(victory_stage)
                 stage_started = time.time()
                 attempts = 0
@@ -346,7 +419,6 @@ def main():
                     log.line(f"[注意] 關卡編號從 {stage_seen} 變成 {cur}，"
                              f"不是 +1。可能是辨識誤差或一次過了多關。")
                 stage_seen = cur
-                ctl.update(stage=cur)
                 log.say(f"── 目前第 {cur} 關 ──")
                 if args.stop_after_stage and cur >= args.stop_after_stage:
                     reason = f"已達第 {cur} 關"
@@ -412,8 +484,6 @@ def main():
                         victory_pending = True
                         victory_stage = stage_seen
                     log.say(f"{s.state:<13} 點了「{label}」@螢幕({gx},{gy})")
-                    ctl.update(last_action=f"點了「{label}」",
-                               last_action_at=time.time())
                     log.action(s.state, s.stage, label, (gx, gy), s.note)
                 pending = (s.state, time.time() + wait)
                 time.sleep(MIN_SETTLE)

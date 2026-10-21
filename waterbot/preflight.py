@@ -76,25 +76,28 @@ def check_ocr():
     return ("TEST" in got.upper()), f"讀到「{got.strip() or '(空)'}」"
 
 
-def find_game(hint="水世界"):
+def find_game(hint=None):
     try:
         from winio import find_windows
     except Exception:
         return None, "套件還沒裝好"
+    from bot import APP_HINTS
+    hints = [h.strip().lower()
+             for h in (hint or ",".join(APP_HINTS)).split(",") if h.strip()]
     wins = find_windows(min_size=300)
     hit = [w for w in wins
-           if hint.lower() in (w["owner"] + " " + w["title"]).lower()]
+           if any(h in (w["owner"] + " " + w["title"]).lower() for h in hints)]
     if hit:
         w = hit[0]
         return True, f"[{w['owner']}] {w['title']} {w['w']}x{w['h']}"
     tall = [w for w in wins if w["h"] > w["w"] * 1.3]
     if tall:
         names = "、".join(f"{w['owner']}" for w in tall[:3])
-        return False, f"沒找到「{hint}」，但有直式視窗: {names}"
-    return False, f"沒找到包含「{hint}」的視窗"
+        return False, f"沒認出遊戲，但有直式視窗: {names}"
+    return False, "沒找到遊戲視窗"
 
 
-def main(game_hint="水世界", open_settings=True):
+def main(game_hint=None, open_settings=True):
     print("=" * 56)
     print(" 開跑前檢查")
     print("=" * 56)
@@ -153,5 +156,5 @@ def main(game_hint="水世界", open_settings=True):
 
 
 if __name__ == "__main__":
-    hint = sys.argv[1] if len(sys.argv) > 1 else "水世界"
+    hint = sys.argv[1] if len(sys.argv) > 1 else None
     sys.exit(main(hint))

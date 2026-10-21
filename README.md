@@ -95,12 +95,6 @@ Verify at any time:
 ./start.command                 # run
 ```
 
-A control page opens in the browser at `http://127.0.0.1:8777`: current
-activity, pause / resume / stop, and the table of cleared stages. It binds to
-localhost only, and `--no-web` turns it off. The game usually occupies half
-the screen, so the page sits comfortably on the other half — just not on top
-of the game, since an occluded button is deliberately not clicked.
-
 In the terminal, space pauses and resumes and `q` stops. Paused time counts
 towards neither the stage duration nor the stuck-screen timeout.
 
