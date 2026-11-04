@@ -225,7 +225,14 @@ than guess:
   A story dialogue can briefly cover the button, so the bot waits and retries;
   the stuck-screen timeout ends the run if it never clears.
 - **Occluded buttons are not clicked.**
-- Automatic stop after 20 clicks in a minute (runaway detection).
+- **Clicks that achieve nothing are escalated, not surrendered to.** After
+  three clicks leave the screen unchanged, the next one activates the window
+  first and hands focus back afterwards, which lands when a background click
+  does not. After many more it posts a notification and backs off, but it
+  never exits: quitting while nobody is watching wastes the whole session.
+- **Display sleep is held off while running.** Once the display sleeps the
+  game stops updating and synthetic clicks go nowhere, which is the likeliest
+  reason an unattended run is found idle. The hold is released on exit.
 - Automatic stop after 5 minutes on an unchanging screen.
 - Automatic stop if the game window disappears.
 

@@ -83,6 +83,29 @@ def covered_by(win, px, py, scale=1.0):
     return blockers
 
 
+def click_front(win, px, py, scale=1.0):
+    """把遊戲帶到前景再點，點完立刻把焦點還給原本的 App。
+
+    這是備案。平常用 click_bg 就夠（不搶焦點），但實際掛機時遇過
+    背景點擊完全不生效的情況 —— 畫面一直停在同一頁、點了二十次都沒反應，
+    人回來手動點卻正常。把視窗帶到前景會讓 App 真的處理事件，
+    代價是焦點短暫被搶走，所以只在連續點不動時才用。
+    """
+    import AppKit
+    ws = AppKit.NSWorkspace.sharedWorkspace()
+    prev = ws.frontmostApplication()
+    app = AppKit.NSRunningApplication.runningApplicationWithProcessIdentifier_(
+        win["pid"])
+    if app is not None:
+        app.activateWithOptions_(AppKit.NSApplicationActivateIgnoringOtherApps)
+        time.sleep(0.25)
+    out = click_bg(win, px, py, scale)
+    time.sleep(0.15)
+    if prev is not None and app is not None and prev.processIdentifier() != win["pid"]:
+        prev.activateWithOptions_(AppKit.NSApplicationActivateIgnoringOtherApps)
+    return out
+
+
 def click_bg(win, px, py, scale=1.0, restore_cursor=True):
     """點視窗內的某個位置。(px, py) 是『截圖像素』座標。
 

@@ -15,7 +15,9 @@
 寧可停下來等人，也不要在不認得的彈窗上亂點。
 """
 import argparse
+import json
 import os
+import subprocess
 
 import cv2
 from collections import Counter, deque
@@ -27,7 +29,8 @@ from detect import classify
 from keys import Keys
 from ocr import ocr
 from runlog import RunLog, human_time
-from winio import find_windows, grab, click_bg, img_scale, covered_by
+from winio import (find_windows, grab, click_bg, click_front,
+                   img_scale, covered_by)
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 STOP_FILE = os.path.join(HERE, "STOP")
@@ -81,6 +84,14 @@ class Control:
         self.paused = not self.paused
         return self.paused
 
+
+# 點了卻沒反應時的處理。實際掛機遇過：畫面停在同一頁，點二十次都沒動靜，
+# 人回來手動點卻正常。最可能是螢幕睡著後 App 不再處理事件。
+# 所以先防止螢幕睡，真的點不動時再把視窗帶到前景點（會短暫搶焦點），
+# 而且無論如何都不要結束 —— 人不在場時結束掉，等於整晚白跑。
+INEFFECTIVE_BEFORE_FRONT = 3    # 連續幾次沒反應就改用前景點擊
+INEFFECTIVE_BEFORE_WARN = 8     # 連續幾次沒反應就跳通知提醒
+STUCK_COOLDOWN = 30.0           # 判定失控後先緩一緩再繼續
 
 FAST_POLL = 0.12      # 剛點完、等畫面轉場時的複查間隔
 MIN_SETTLE = 0.15     # 點完至少先等這麼久再看，避免看到點擊前的殘影
@@ -148,6 +159,31 @@ def pick_window(name_hint, verbose=False):
         return None
     cand.sort(key=lambda w: (w["h"] <= w["w"], -w["w"] * w["h"]))  # 直式優先
     return cand[0]
+
+
+def notify(title, msg):
+    """跳一個 macOS 通知。人不在電腦前時，這是唯一會被看到的提示。"""
+    try:
+        subprocess.run(
+            ["osascript", "-e",
+             f'display notification {json.dumps(msg)} with title {json.dumps(title)}'],
+            capture_output=True, timeout=5)
+    except Exception:            # noqa: BLE001 — 通知失敗不該影響主流程
+        pass
+
+
+def keep_awake():
+    """擋住螢幕睡眠，直到本行程結束。
+
+    螢幕睡著之後遊戲不再更新畫面、合成點擊也打不進去，
+    這是掛機整晚回來發現沒在動的最可能原因。
+    """
+    try:
+        return subprocess.Popen(
+            ["caffeinate", "-di", "-w", str(os.getpid())],
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    except Exception:            # noqa: BLE001
+        return None
 
 
 def look(app_hint):
@@ -249,6 +285,9 @@ def main():
 
     kb = Keys()
     ctl = Control()
+    awake = keep_awake()
+    if awake:
+        log.line("已擋住螢幕睡眠（caffeinate），程式結束就自動解除")
 
 
     win = pick_window(args.app)
@@ -275,6 +314,8 @@ def main():
     stage_started = time.time()   # 目前這一關是什麼時候開始的
     attempts = 0                  # 這一關失敗重試了幾次
     cleared = []                  # 這次執行通過了哪幾關
+    ineffective = 0               # 連續幾次「點了但畫面沒變」
+    warned_stuck = False          # 已經跳過通知了，不要一直跳
     stage_votes = deque(maxlen=STAGE_VOTES)   # 最近幾次讀到的關卡編號
     victory_pending = False       # 點了「下一關」，還在等畫面離開勝利頁
     victory_stage = None          # 點下去的當下，確認過的關卡編號
@@ -440,6 +481,12 @@ def main():
                 if s.state == p_state and now < p_deadline:
                     time.sleep(FAST_POLL)
                     continue
+                if s.state == p_state:
+                    # 等滿了畫面還是同一頁，代表剛才那一下沒有生效
+                    ineffective += 1
+                else:
+                    ineffective = 0
+                    warned_stuck = False
                 pending = None
 
             # ---- 認得畫面，但關鍵按鈕讀不到 ----
@@ -467,23 +514,43 @@ def main():
 
                 click_times = [t for t in click_times if time.time() - t < 60]
                 if len(click_times) >= args.max_clicks_per_min:
-                    reason = f"一分鐘內點了 {len(click_times)} 下，不正常"
-                    log.say(reason + "，停止。")
-                    log.snapshot(img, "runaway", items, reason)
-                    break
+                    # 不結束。人不在場時結束掉等於整晚白跑，
+                    # 而且這種情況通常是暫時的（螢幕睡著、彈窗擋住）。
+                    log.say(f"一分鐘內點了 {len(click_times)} 下都沒進展，"
+                            f"先緩 {STUCK_COOLDOWN:.0f} 秒再試。")
+                    maybe_snapshot("stalled", img, items,
+                                   "點擊沒有讓畫面前進", every=300)
+                    log.action(s.state, s.stage, "（冷卻）", s.click, "")
+                    if not warned_stuck:
+                        notify("瘋狂水世界 自動刷關",
+                               "點了很多次畫面都沒變，可能需要看一下")
+                        warned_stuck = True
+                    nap(STUCK_COOLDOWN)
+                    click_times = []
+                    continue
 
                 if args.dry_run:
                     log.say(f"{s.state:<13} 想點「{label}」@{s.click}")
                     log.action(s.state, s.stage, f"（乾跑）{label}", s.click)
                 else:
-                    gx, gy = click_bg(win, s.click[0], s.click[1], scale)
+                    if ineffective >= INEFFECTIVE_BEFORE_FRONT:
+                        gx, gy = click_front(win, s.click[0], s.click[1], scale)
+                        log.line(f"背景點擊連續 {ineffective} 次沒反應，"
+                                 f"改用前景點擊")
+                    else:
+                        gx, gy = click_bg(win, s.click[0], s.click[1], scale)
                     click_times.append(time.time())
                     if s.state == "DEFEAT":
                         attempts += 1
                     elif s.state == "VICTORY":
                         victory_pending = True
                         victory_stage = stage_seen
-                    log.say(f"{s.state:<13} 點了「{label}」@螢幕({gx},{gy})")
+                    tag = f"（第 {ineffective} 次沒反應）" if ineffective else ""
+                    log.say(f"{s.state:<13} 點了「{label}」@螢幕({gx},{gy}){tag}")
+                    if ineffective >= INEFFECTIVE_BEFORE_WARN and not warned_stuck:
+                        notify("瘋狂水世界 自動刷關",
+                               f"點了 {ineffective} 次畫面都沒變，可能需要看一下")
+                        warned_stuck = True
                     log.action(s.state, s.stage, label, (gx, gy), s.note)
                 pending = (s.state, time.time() + wait)
                 time.sleep(MIN_SETTLE)
