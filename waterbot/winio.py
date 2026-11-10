@@ -58,6 +58,20 @@ def img_scale(win, img) -> float:
     return img.shape[1] / float(win["w"])
 
 
+def user_idle():
+    """距離使用者上次真的動鍵盤或滑鼠過了幾秒。
+
+    用來分辨「人在電腦前」和「人走開了」：人在的時候不該把遊戲
+    搶到前景打斷他，人不在的時候就可以放手突破遮擋。
+    """
+    src = Quartz.kCGEventSourceStateHIDSystemState
+    return min(
+        Quartz.CGEventSourceSecondsSinceLastEventType(src, t)
+        for t in (Quartz.kCGEventKeyDown, Quartz.kCGEventMouseMoved,
+                  Quartz.kCGEventLeftMouseDown, Quartz.kCGEventRightMouseDown,
+                  Quartz.kCGEventScrollWheel))
+
+
 def cursor_pos():
     return Quartz.CGEventGetLocation(Quartz.CGEventCreate(None))
 

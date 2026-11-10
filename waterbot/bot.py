@@ -30,7 +30,7 @@ from keys import Keys
 from ocr import ocr
 from runlog import RunLog, human_time
 from winio import (find_windows, grab, click_bg, click_front,
-                   img_scale, covered_by)
+                   img_scale, covered_by, user_idle)
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 STOP_FILE = os.path.join(HERE, "STOP")
@@ -92,6 +92,12 @@ class Control:
 INEFFECTIVE_BEFORE_FRONT = 3    # 連續幾次沒反應就改用前景點擊
 INEFFECTIVE_BEFORE_WARN = 8     # 連續幾次沒反應就跳通知提醒
 STUCK_COOLDOWN = 30.0           # 判定失控後先緩一緩再繼續
+
+# 按鈕被別的視窗蓋住時，預設禮貌地跳過不點 —— 使用者可能正在用那個視窗。
+# 但人要是走開了，一直禮讓就等於整晚停擺。所以連續被擋夠久、而且確定
+# 人沒在動電腦，就把遊戲拉到前景點一下（遮擋自然就不在上面了）再還回去。
+BLOCKED_BEFORE_BREAK = 10.0     # 連續被擋幾秒才考慮突破
+IDLE_BEFORE_BREAK = 30.0        # 使用者要幾秒沒動過才算「不在」
 
 FAST_POLL = 0.12      # 剛點完、等畫面轉場時的複查間隔
 MIN_SETTLE = 0.15     # 點完至少先等這麼久再看，避免看到點擊前的殘影
@@ -230,6 +236,18 @@ def look(app_hint):
     if s.note:
         print(f"備註：{s.note}")
 
+    if s.click:
+        blockers = covered_by(win, s.click[0], s.click[1],
+                              img_scale(win, img))
+        if blockers:
+            print(f"\n⚠️  這個位置被擋住了，所以不會點：")
+            for b in blockers:
+                print(f"      {b}")
+            print("      （把那個視窗移開，或讓遊戲視窗不要被壓到）")
+        else:
+            print("\n這個位置沒有被別的視窗蓋住，可以點。")
+    print(f"使用者已閒置 {user_idle():.0f} 秒")
+
     os.makedirs(OUT, exist_ok=True)
     path = os.path.join(OUT, "look.png")
     shot = img.copy()
@@ -316,6 +334,7 @@ def main():
     cleared = []                  # 這次執行通過了哪幾關
     ineffective = 0               # 連續幾次「點了但畫面沒變」
     warned_stuck = False          # 已經跳過通知了，不要一直跳
+    blocked_since = None          # 從什麼時候開始被遮擋
     stage_votes = deque(maxlen=STAGE_VOTES)   # 最近幾次讀到的關卡編號
     victory_pending = False       # 點了「下一關」，還在等畫面離開勝利頁
     victory_stage = None          # 點下去的當下，確認過的關卡編號
@@ -505,12 +524,31 @@ def main():
                 label, wait = ACTIONS[s.state]
 
                 blockers = covered_by(win, s.click[0], s.click[1], scale)
+                force_front = False
                 if blockers:
-                    log.say(f"{s.state}：「{label}」被 {blockers[0]} 蓋住，這次不點")
-                    log.action(s.state, s.stage, "（被遮擋跳過）", s.click,
-                               ",".join(blockers))
-                    time.sleep(args.interval)
-                    continue
+                    if blocked_since is None:
+                        blocked_since = time.time()
+                    blocked_for = time.time() - blocked_since
+                    idle = user_idle()
+                    # 人還在用電腦就禮讓；人走開了就沒有理由一直停擺
+                    if (blocked_for >= BLOCKED_BEFORE_BREAK
+                            and idle >= IDLE_BEFORE_BREAK):
+                        force_front = True
+                        log.say(f"「{label}」被 {blockers[0]} 蓋住 "
+                                f"{blocked_for:.0f} 秒，而且沒人在用電腦，"
+                                f"把遊戲拉到前面點")
+                    else:
+                        if maybe_snapshot("blocked", img, items,
+                                          f"被 {','.join(blockers)} 蓋住",
+                                          every=30):
+                            log.say(f"{s.state}：「{label}」被 "
+                                    f"{blockers[0]} 蓋住，先不點")
+                            log.action(s.state, s.stage, "（被遮擋跳過）",
+                                       s.click, ",".join(blockers))
+                        time.sleep(args.interval)
+                        continue
+                else:
+                    blocked_since = None
 
                 click_times = [t for t in click_times if time.time() - t < 60]
                 if len(click_times) >= args.max_clicks_per_min:
@@ -533,10 +571,11 @@ def main():
                     log.say(f"{s.state:<13} 想點「{label}」@{s.click}")
                     log.action(s.state, s.stage, f"（乾跑）{label}", s.click)
                 else:
-                    if ineffective >= INEFFECTIVE_BEFORE_FRONT:
+                    if force_front or ineffective >= INEFFECTIVE_BEFORE_FRONT:
                         gx, gy = click_front(win, s.click[0], s.click[1], scale)
-                        log.line(f"背景點擊連續 {ineffective} 次沒反應，"
-                                 f"改用前景點擊")
+                        if not force_front:
+                            log.line(f"背景點擊連續 {ineffective} 次沒反應，"
+                                     f"改用前景點擊")
                     else:
                         gx, gy = click_bg(win, s.click[0], s.click[1], scale)
                     click_times.append(time.time())
