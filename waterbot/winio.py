@@ -78,9 +78,41 @@ def covered_by(win, px, py, scale=1.0):
     for w in find_windows(min_size=50):      # 由上而下排序
         if w["wid"] == win["wid"]:
             break                            # 到自己了，上面的都檢查完了
-        if w["x"] <= gx <= w["x"] + w["w"] and w["y"] <= gy <= w["y"] + w["h"]:
-            blockers.append(f"{w['owner']}/{w['title'] or '(無標題)'}")
+        if not (w["x"] <= gx <= w["x"] + w["w"]
+                and w["y"] <= gy <= w["y"] + w["h"]):
+            continue
+        if passes_through(w, gx, gy):
+            continue
+        blockers.append(f"{w['owner']}/{w['title'] or '(無標題)'}")
     return blockers
+
+
+# 通知橫幅出現在螢幕右上角，大約 370x100 點。這裡抓寬一點當安全邊界。
+BANNER_W, BANNER_H = 460, 260
+
+
+def passes_through(w, gx, gy):
+    """這個視窗雖然蓋住了該點，但點擊其實穿得過去嗎？
+
+    有通知時，macOS 會把 Notification Center 這個視窗的範圍報成整個螢幕
+    （實測是 0,0 1920x1080），但實際上只有右上角那塊橫幅會接走點擊，
+    其餘位置都是穿透的。實測對照：
+
+        沒有通知   covered_by 說沒被擋   點擊生效
+        通知跳出   covered_by 說被擋     點擊仍然生效  <- 誤判
+
+    不修的話，通知顯示的那幾秒會白白跳過；通知若是「提醒」樣式不會自動
+    消失，就會一路空轉到逾時、整個程式結束。
+
+    只放行這一種視窗。像 Cmd+Shift+5 的截圖工具（owner 是 Screenshot）
+    同樣是全螢幕覆蓋層，但它**真的會攔截**所有滑鼠輸入，必須照擋。
+    """
+    if w["owner"] != "Notification Center":
+        return False
+    # 落在右上角橫幅範圍內就當真的被擋，其餘位置視為穿透
+    in_banner = (gx >= w["x"] + w["w"] - BANNER_W
+                 and gy <= w["y"] + BANNER_H)
+    return not in_banner
 
 
 def click_front(win, px, py, scale=1.0):
