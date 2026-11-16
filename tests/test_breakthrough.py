@@ -43,6 +43,7 @@ def run_case(tag, idle_seconds, seconds=5.0):
     tmp = tempfile.mkdtemp()
     try:
         bot.OUT = tmp
+        bot.CLEARS = os.path.join(tmp, "通關紀錄.txt")   # 別寫到真的主目錄
         bot.BAND_TOP = 0.0
         bot.BLOCKED_BEFORE_BREAK = 1.0      # 測試不等 10 秒
         bot.IDLE_BEFORE_BREAK = 30.0        # 門檻維持真實值

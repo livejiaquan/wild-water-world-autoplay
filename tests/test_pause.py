@@ -38,6 +38,7 @@ def fake_ocr(img, langs=None, fast=False):
     return [("2倍速", 800, int(H*0.93), 1.0), stage]
 
 bot.OUT = os.environ["OUTDIR"]
+bot.CLEARS = os.path.join(bot.OUT, "通關紀錄.txt")
 bot.BAND_TOP = 0.0
 bot.ocr = fake_ocr
 bot.grab = lambda win: np.zeros((H, W, 3), np.uint8)

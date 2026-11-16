@@ -238,15 +238,20 @@ than guess:
 
 ## Progress record
 
-Some stages take a long time, so each clear is appended to
-`waterbot/out/通關紀錄.txt`:
+Some stages take a long time, so each clear is recorded in `通關紀錄.txt` in
+the **project root** — the folder holding `start.command`, where a
+non-technical user will actually look. The **newest clear is on top**, so the
+latest progress is visible without scrolling:
 
 ```
 關卡    通過時間            花了多久    試了幾次
 ────────────────────────
-876     10/20 22:15:41      4分12秒     18 次
 877     10/20 22:22:11      6分30秒     27 次
+876     10/20 22:15:41      4分12秒     18 次
 ```
+
+A record left in `waterbot/out/` by an earlier version is moved there on first
+run and reversed into this order.
 
 A clear is recorded when the bot **actually clicks 下一關**, not when the stage
 number changes. OCR occasionally misreads a digit — 885 has been observed
@@ -262,11 +267,11 @@ already being read, so it costs no extra OCR and does not slow the loop.
 
 ## Diagnostics
 
-Everything lands in `waterbot/out/`:
+The progress record is in the project root (above); everything for
+debugging lands in `waterbot/out/`:
 
 | File | Contents |
 |---|---|
-| `通關紀錄.txt` | **The one meant for people**: which stage, when it was cleared, how long it took, how many attempts |
 | `run.log` | Chronological log. **Unrecognised screens dump every OCR string with its position and confidence.** |
 | `run.csv` | One row per action, openable in Numbers or Excel |
 | `shots/` | Screenshots captured when confused or stuck |

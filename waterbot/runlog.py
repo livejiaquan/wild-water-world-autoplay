@@ -37,9 +37,39 @@ def human_time(seconds):
     return f"{h}小時{m}分" if m else f"{h}小時"
 
 
+CLEARS_NAME = "通關紀錄.txt"
+HEADER_LINES = 2          # 表頭一行 + 分隔線一行
+
+
+def _header():
+    return [pad("關卡", 8) + pad("通過時間", 20) + pad("花了多久", 12)
+            + "試了幾次\n", "─" * 24 + "\n"]
+
+
+def _read_rows(path):
+    """讀出既有的紀錄列（不含表頭）。檔案不存在就回空的。"""
+    if not os.path.exists(path):
+        return []
+    with open(path, encoding="utf-8") as f:
+        lines = f.readlines()
+    return [l for l in lines[HEADER_LINES:] if l.strip()]
+
+
+def _write_rows(path, rows):
+    """整份重寫。先寫暫存檔再換名，寫到一半被中斷也不會弄壞原檔。"""
+    tmp = path + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as f:
+        f.writelines(_header() + rows)
+    os.replace(tmp, path)
+
+
 class RunLog:
-    def __init__(self, outdir):
+    def __init__(self, outdir, clears_path=None):
         self.dir = outdir
+        # 通關紀錄是給人看的，預設放在 outdir；主程式會把它放到主目錄，
+        # 也就是使用者雙擊 start.command 的那個資料夾，不用再往下找。
+        self.clears_path = clears_path or os.path.join(outdir, CLEARS_NAME)
+        self._migrate_clears()
         self.shots = os.path.join(outdir, "shots")
         os.makedirs(self.shots, exist_ok=True)
         self.logpath = os.path.join(outdir, "run.log")
@@ -104,26 +134,40 @@ class RunLog:
             self.line(f"    {ln}")
 
     # ---- 通關紀錄（給人看的，不是給程式看的）-----------------------
+    def _migrate_clears(self):
+        """把舊位置（out 資料夾裡）的紀錄搬到新位置，並改成最新在上。
+
+        舊版是一筆一筆往下加，所以檔案裡的順序就是時間順序，
+        整個倒過來就是最新在上。只在新位置還沒有檔案時做，做過就不會再做。
+        """
+        old = os.path.join(self.dir, CLEARS_NAME)
+        new = self.clears_path
+        if os.path.abspath(old) == os.path.abspath(new):
+            return
+        if os.path.exists(new) or not os.path.exists(old):
+            return
+        rows = _read_rows(old)
+        _write_rows(new, list(reversed(rows)))
+        os.remove(old)
+
     def clear(self, stage, seconds, attempts):
         """記下一關通過了，連同花多久、試了幾次。
 
         單獨寫一個檔案，格式排整齊、用詞白話，讓不看 log 的人
         也能一眼知道卡在哪一關、哪一關是什麼時候過的。
+
+        **最新的放最上面**：使用者回饋每次打開都要往下拉才看得到
+        最近的進度。紀錄一天也就幾十筆，整份重寫的成本可以忽略。
         """
-        path = os.path.join(self.dir, "通關紀錄.txt")
-        new = not os.path.exists(path) or os.path.getsize(path) == 0
-        with open(path, "a", encoding="utf-8") as f:
-            if new:
-                f.write(pad("關卡", 8) + pad("通過時間", 20)
-                        + pad("花了多久", 12) + "試了幾次\n")
-                f.write("─" * 24 + "\n")
-            f.write(pad(str(stage), 8)
-                    + pad(f"{datetime.now():%m/%d %H:%M:%S}", 20)
-                    + pad(human_time(seconds), 12)
-                    + f"{attempts} 次\n")
+        row = (pad(str(stage), 8)
+               + pad(f"{datetime.now():%m/%d %H:%M:%S}", 20)
+               + pad(human_time(seconds), 12)
+               + f"{attempts} 次\n")
+        rows = _read_rows(self.clears_path)
+        _write_rows(self.clears_path, [row] + rows)
         self.line(f"[通關] 第{stage}關 耗時{human_time(seconds)} "
                   f"嘗試{attempts}次")
-        return path
+        return self.clears_path
 
     # ---- 收尾 -----------------------------------------------------
     def finish(self, stats, reason):

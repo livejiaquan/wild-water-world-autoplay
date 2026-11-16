@@ -35,7 +35,7 @@ ok "更新完成"
 echo
 if [ -x waterbot/.venv/bin/python ]; then
     echo "環境還在，直接雙擊 ${BOLD}start.command${OFF} 就可以用。"
-    if [ -f waterbot/out/通關紀錄.txt ]; then
+    if [ -f 通關紀錄.txt ] || [ -f waterbot/out/通關紀錄.txt ]; then
         echo "你的通關紀錄也還在。"
     fi
 else

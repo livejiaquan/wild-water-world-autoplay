@@ -56,6 +56,7 @@ def check(name, got, want=True):
 
 try:
     bot.OUT = tmp
+    bot.CLEARS = os.path.join(tmp, "通關紀錄.txt")   # 別寫到真的主目錄
     bot.BAND_TOP = 0.0
     bot.STUCK_COOLDOWN = 1.0           # 測試不等 30 秒
     # 縮短「點完等畫面變化」的上限，這樣「沒反應」的判定會快很多。

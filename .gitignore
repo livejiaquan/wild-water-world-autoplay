@@ -4,3 +4,5 @@ __pycache__/
 waterbot/out/
 waterbot/STOP
 testdata/
+/通關紀錄.txt
+/通關紀錄.txt.tmp

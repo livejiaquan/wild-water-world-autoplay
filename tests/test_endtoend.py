@@ -75,6 +75,7 @@ tmp = tempfile.mkdtemp()
 rc = 1
 try:
     bot.OUT = tmp
+    bot.CLEARS = os.path.join(tmp, "通關紀錄.txt")   # 別寫到真的主目錄
     bot.BAND_TOP = 0.0          # 讓假座標不被裁切偏移影響
     bot.ocr = fake_ocr
     bot.grab = fake_grab
@@ -102,14 +103,15 @@ try:
     if len(rows) != 2:
         fails.append(f"應該有 2 筆通關紀錄，實際 {len(rows)}")
     else:
-        if not rows[0].startswith("876"):
-            fails.append(f"第一筆應該是 876 關：{rows[0]}")
-        if "2 次" not in rows[0]:
-            fails.append(f"876 關應該記錄試了 2 次：{rows[0]}")
-        if not rows[1].startswith("877"):
-            fails.append(f"第二筆應該是 877 關：{rows[1]}")
-        if "0 次" not in rows[1]:
-            fails.append(f"877 關應該記錄試了 0 次：{rows[1]}")
+        # 最新的在最上面：877 比 876 晚過，所以排第一
+        if not rows[0].startswith("877"):
+            fails.append(f"第一筆應該是最新的 877 關：{rows[0]}")
+        if "0 次" not in rows[0]:
+            fails.append(f"877 關應該記錄試了 0 次：{rows[0]}")
+        if not rows[1].startswith("876"):
+            fails.append(f"第二筆應該是 876 關：{rows[1]}")
+        if "2 次" not in rows[1]:
+            fails.append(f"876 關應該記錄試了 2 次：{rows[1]}")
 
     if fails:
         print("失敗：")

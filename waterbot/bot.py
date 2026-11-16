@@ -35,6 +35,9 @@ from winio import (find_windows, grab, click_bg, click_front,
 HERE = os.path.dirname(os.path.abspath(__file__))
 STOP_FILE = os.path.join(HERE, "STOP")
 OUT = os.path.join(HERE, "out")
+# 通關紀錄放在主目錄（使用者雙擊 start.command 的那個資料夾），
+# 不放在 waterbot/out 裡 —— 不懂程式的人不會想往資料夾深處找。
+CLEARS = os.path.join(os.path.dirname(HERE), "通關紀錄.txt")
 
 # 哪些狀態要點、點完最多等多久（秒）。這只是上限：點完會以 FAST_POLL 的
 # 節奏快速複查，畫面一離開原狀態就立刻往下，不會傻等滿。
@@ -298,7 +301,7 @@ def main():
     if os.path.exists(STOP_FILE):
         os.remove(STOP_FILE)
 
-    log = RunLog(OUT)
+    log = RunLog(OUT, clears_path=CLEARS)
     log.line(f"參數: {vars(args)}")
 
     kb = Keys()
@@ -325,7 +328,7 @@ def main():
     if args.dry_run:
         log.say("** 乾跑模式：只會說它想點哪裡，不會真的點 **")
     log.say(f"紀錄寫在 {OUT}/run.log")
-    log.say(f"通關紀錄：{OUT}/通關紀錄.txt")
+    log.say("通關紀錄：主目錄的「通關紀錄.txt」（最新的在最上面）")
 
     last_state, last_change = None, time.time()
     click_times, stage_seen, stats = [], None, {}
@@ -626,7 +629,7 @@ def main():
                     f"第 {known[0]} 關 → 第 {known[-1]} 關")
         else:
             log.say(f"這次通過 {len(cleared)} 關（關卡編號沒讀到）")
-        log.say(f"明細看 {OUT}/通關紀錄.txt")
+        log.say("明細看主目錄的「通關紀錄.txt」")
     else:
         log.say("這次沒有通過新的關卡。")
     log.say("統計： " + "  ".join(f"{k}×{v}" for k, v in
