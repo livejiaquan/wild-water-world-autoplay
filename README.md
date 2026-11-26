@@ -37,6 +37,22 @@ On a screen it does not recognise (pop-ups, events, purchase screens, story
 choices) it **does nothing and waits for you**. Return to one of the screens
 above and it carries on by itself.
 
+## City war mode (19:00–20:00 Taiwan time)
+
+During the alliance city war, `citywar.command` keeps sending fleets to a
+chosen target from the left-hand list, e.g. `防守堡壘F2`, repairing damaged
+ones first. It taps the target, checks the city popup's title matches, taps
+前往, then in the fleet dialog repairs damaged fleets, selects intact idle
+ones and sends them; with nothing available it waits out the timers in the
+dialog. It stops at 20:00.
+
+A fleet is sent only when two independent signals agree it is intact: no
+維修 button, and a full durability bar read by colour rather than OCR.
+Repair is always the wait-it-out kind; nothing that costs diamonds or speeds
+anything up is ever tapped, and any such wording in the middle of the screen
+halts the run with a notification. The mode lives in `siege.py` (reading)
+and `siege_bot.py` (loop), separate from the stage grinder.
+
 ## Requirements
 
 - macOS 13 (Ventura) or later, Apple Silicon or Intel

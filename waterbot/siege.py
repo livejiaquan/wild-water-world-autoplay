@@ -267,6 +267,71 @@ def _read_target_list(img, ocr_fn):
     return targets
 
 
+# --------------------------------------------------------------- 決策
+# 出現這些字代表畫面要花錢或加速。城戰模式一律不碰，遇到就停下來。
+COST_WORDS = ("鑽石", "钻石", "加速", "花費", "花费", "購買", "购买", "立即完成")
+
+SEND_BUTTON = "前往"      # 城市彈窗上派艦隊出去的那顆（使用者確認過）
+
+
+@dataclass
+class Action:
+    kind: str                     # tap / wait / stop / reset
+    at: tuple | None = None       # tap 的位置（截圖像素）
+    seconds: float = 0.0          # wait 多久
+    why: str = ""
+
+
+def plan(screen, target, items=()):
+    """看目前畫面，決定**下一個**動作。一次只回一個，做完要重新看畫面。
+
+    原則：
+      * 只點這幾種東西：清單上的目標、標題吻合的城市彈窗的「前往」、
+        「維修」、艦隊列（勾選或取消勾選）、「出征」。其餘一律不點。
+      * 維修只按「維修」，從不加速、不花鑽石。
+      * 只有完好（空閒＋沒有維修鈕＋耐久條滿）的艦隊會被派出去。
+    """
+    for text, *_ in items:
+        if any(w in text for w in COST_WORDS):
+            return Action("stop", why=f"畫面出現「{text.strip()}」，可能要花錢，停下來")
+
+    if screen.kind == "fleets":
+        for f in screen.fleets:
+            if f.needs_repair:
+                return Action("tap", f.repair_at, why=f"第 {f.index} 支受損，按維修")
+        # 已勾選但沒準備好的先取消，免得按出征時把它一起送出去
+        for f in screen.fleets:
+            if f.selected and not f.ready:
+                return Action("tap", f.tap_at,
+                              why=f"第 {f.index} 支還沒準備好卻被勾著，取消勾選")
+        for f in screen.fleets:
+            if f.ready and not f.selected:
+                return Action("tap", f.tap_at,
+                              why=f"第 {f.index} 支完好空閒（耐久 {f.bar:.2f}），勾選")
+        if any(f.ready and f.selected for f in screen.fleets) and screen.send_at:
+            n = sum(f.ready and f.selected for f in screen.fleets)
+            return Action("tap", screen.send_at, why=f"出征（{n} 支）")
+        timers = [f.timer for f in screen.fleets if f.timer]
+        wait = min(max(min(timers) - 1, 1), 5) if timers else 3
+        return Action("wait", seconds=wait, why="沒有可出征的艦隊，等倒數")
+
+    if screen.kind == "city":
+        if not same_target(screen.city, target):
+            return Action("reset", why=f"開到的是「{screen.city}」，不是「{target}」")
+        if SEND_BUTTON in screen.buttons:
+            return Action("tap", screen.buttons[SEND_BUTTON],
+                          why=f"城市是「{screen.city}」，按{SEND_BUTTON}")
+        return Action("wait", seconds=1, why="城市彈窗還沒完全出現")
+
+    if screen.kind == "map":
+        hit = find_target(screen, target)
+        if hit:
+            return Action("tap", hit[1], why=f"點左側目標「{hit[0]}」")
+        return Action("wait", seconds=2, why=f"左側清單找不到「{target}」")
+
+    return Action("wait", seconds=1, why="看不懂這個畫面（載入中或其他頁面）")
+
+
 def find_target(screen, wanted):
     """在左側清單裡找使用者設定的目標，回傳 (讀到的名稱, 位置) 或 None。"""
     want = split_target(wanted)
