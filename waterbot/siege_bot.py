@@ -36,6 +36,8 @@ SAME_BEFORE_FRONT = 3   # 同一個動作重複幾次畫面都沒變，改用前
 SAME_BEFORE_WARN = 8    # 重複幾次就跳通知
 MAX_TAPS_PER_MIN = 40
 GO_WITHOUT_DIALOG = 4   # 連按幾次「前往」都沒出現艦隊視窗，就判定流程卡住
+WRONG_CITY_CONFIRM = 2  # 連續幾次讀到同一個「錯的城市」才算數（實測 F 會被讀成 P）
+UNCLEAR_TITLE_MAX = 6   # 標題連續幾次讀不清楚，就退回去重點清單
 
 running = True
 
@@ -99,6 +101,8 @@ def main():
     camera_on_city = False   # 鏡頭是否已經停在目標城市上
     center_tries = 0         # 點正中央叫彈窗試了幾次
     go_presses = 0           # 按了幾次前往還沒看到艦隊視窗
+    wrong_city = (None, 0)   # (讀到的錯誤城市, 連續次數)
+    unclear_title = 0        # 標題連續讀不清楚幾次
     reason = "正常結束"
 
     while running:
@@ -139,6 +143,24 @@ def main():
         act = siege.plan(screen, args.target, middle,
                          camera_on_city=camera_on_city,
                          center_tries=center_tries)
+
+        # 標題讀成別的城市：先確認不是讀錯字。實測「堡壘F2」被讀成「堡壘P2」
+        if act.kind == "reset":
+            name = screen.city
+            n = wrong_city[1] + 1 if wrong_city[0] == name else 1
+            wrong_city = (name, n)
+            if n < WRONG_CITY_CONFIRM:
+                act = siege.Action("wait", seconds=0.3,
+                                   why=f"標題讀到「{name}」，再確認一次")
+        else:
+            wrong_city = (None, 0)
+        if act.why == "城市標題沒讀清楚，再看一次":
+            unclear_title += 1
+            if unclear_title >= UNCLEAR_TITLE_MAX:
+                unclear_title = 0
+                act = siege.Action("reset", why="標題一直讀不清楚，回去重點目標")
+        else:
+            unclear_title = 0
 
         if act.kind == "reset":
             hit = siege.find_target(

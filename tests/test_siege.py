@@ -102,6 +102,61 @@ check("正中央試太多次就退回點清單", a.why.startswith("點左側目�
 a = siege.plan(s, "防守堡壘F2", camera_on_city=False)
 check("鏡頭不在城市上時點清單", a.why.startswith("點左側目標"), True)
 
+
+print("\n── 低解析度實機錄影（IMG_8939，444x960）出問題的畫面 ──")
+# 這些都是第一版判錯的畫面，每一個都對應一個修正
+LOWRES = [
+    ("lowres_send_one", "tap", "出征",
+     "第 3 支空閒＋勾選＋耐久 1.00，該出征"),
+    ("lowres_status_flicker", None, None,
+     "第 3 支狀態讀成「空開中」。舊版當成讀不到、把它取消勾選；不能取消"),
+    ("lowres_three_damaged", "tap", "第 1 支受損，按維修",
+     "三支都受損；第 3 支狀態讀成「空開中」但看得到維修鈕，也要算受損"),
+    ("lowres_all_ready", "tap", "第 2 支完好空閒",
+     "三支都修好，這一幀只有第 1 支勾著。舊版把第 1 支（讀成「空開中」）"
+     "誤判成沒準備好、連取消 5 次；正確是接著勾第 2 支"),
+    ("lowres_reward", "tap", "獎勵畫面，點空白處關掉",
+     "「恭喜獲得 鑽石×60」是拿到的；舊版看到鑽石就停止"),
+    ("lowres_title_truncated", None, None,
+     "標題讀成「堡壘F」。舊版當成開錯城市；應該再看一次，不能 reset"),
+]
+for name, kind, why, note in LOWRES:
+    img = cv2.imread(os.path.join(FIX, name + ".jpg"))
+    from ocr import ocr as _ocr
+    items = _ocr(img)
+    h = img.shape[0]
+    mid = [i for i in items if 0.12 * h < i[2] < 0.84 * h and "系統" not in i[0]]
+    a = siege.plan(siege.read(img, items), "防守堡壘F2", mid)
+    print(f"   ({note})")
+    if name == "lowres_status_flicker":
+        check(name + " 不可以取消勾選", "取消勾選" in a.why, False)
+        check(name + " 也不可以停止", a.kind == "stop", False)
+    elif name == "lowres_title_truncated":
+        check(name + " 不可以判成開錯城市", a.kind == "reset", False)
+    else:
+        check(name, (a.kind, a.why.startswith(why)), (kind, True))
+    if name == "lowres_all_ready":
+        s3 = siege.read(img, items)
+        check("   三支都判成可以出征", [f.ready for f in s3.fleets], [True, True, True])
+    if name == "lowres_three_damaged":
+        s3 = siege.read(img, items)
+        check("   三支都判成需要維修", [f.needs_repair for f in s3.fleets],
+              [True, True, True])
+
+print("\n── 清單前綴漏讀（實測「防守堡壘F2」被讀成「堡壘F2」）──")
+s = siege.SiegeScreen("map", targets={"堡壘F2": (10, 10), "防守堡壘E1": (10, 50)})
+check("「堡壘F2」仍找得到防守堡壘F2", bool(siege.find_target(s, "防守堡壘F2")), True)
+s = siege.SiegeScreen("map", targets={"進攻堡壘F2": (10, 10)})
+check("前綴讀到而且不同（進攻 vs 防守），不能算", siege.find_target(s, "防守堡壘F2"), None)
+
+print("\n── 「鑽石」本身不等於要花錢 ──")
+check("獎勵上的鑽石不停", siege.plan(siege.SiegeScreen("unknown"), "防守堡壘F2",
+                                    [("鑽石", 1, 1, 1.0)]).kind == "stop", False)
+check("「花費 50 鑽石」要停", siege.plan(siege.SiegeScreen("unknown"), "防守堡壘F2",
+                                    [("花費50鑽石", 1, 1, 1.0)]).kind, "stop")
+check("「加速」要停", siege.plan(siege.SiegeScreen("unknown"), "防守堡壘F2",
+                                [("加速", 1, 1, 1.0)]).kind, "stop")
+
 print("\n── 代號正規化（OCR 會把 1 讀成 I、0 讀成 O）──")
 check("EI = E1", siege.same_target("防守堡壘EI", "防守堡壘E1"), True)
 check("FO = F0", siege.same_target("進攻營地FO", "進攻營地F0"), True)

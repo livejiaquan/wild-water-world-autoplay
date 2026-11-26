@@ -28,6 +28,9 @@ BAR_FULL = 0.97            # 耐久條比例 >= 這個才算滿。實測滿格 0
 CHECK_MIN = 0.05           # 綠色勾勾佔比 >= 這個算已勾選（實測 0.12–0.14 vs 0）
 
 TIMER_RE = re.compile(r"(\d{1,2})\s*[:：]\s*(\d{2})")
+# 「空閒中」實測會被讀成「空間中」「空開中」（閒→間、開，形近字）
+IDLE_WORDS = ("空閒", "空間", "空開", "空闲", "空间", "空开")
+ROW_ZOOMS = (3, 4, 5)      # 狀態讀不到就換倍率重讀（實測 ×3 讀錯時 ×4 常讀對）
 
 
 # --------------------------------------------------------------- 文字工具
@@ -69,8 +72,21 @@ class Fleet:
     raw: list = field(default_factory=list)  # 放大後 OCR 讀到的字，除錯用
 
     @property
+    def busy(self):
+        """確定在忙（行軍、維修中、駐防、交戰）。"""
+        return self.status in ("timer", "garrison", "battle")
+
+    @property
     def needs_repair(self):
-        return self.status == "idle" and self.repair_at is not None
+        # 狀態讀不到但看得到維修鈕，也算 —— 維修鈕只出現在受損且空閒的艦隊上
+        return self.repair_at is not None and not self.busy
+
+    @property
+    def surely_not_ready(self):
+        """**確定**不能出征。讀不到狀態（unknown）不算 —— 不知道就不要動它。"""
+        return (self.busy or self.needs_repair
+                or (self.status == "idle" and self.bar is not None
+                    and self.bar < BAR_FULL))
 
     @property
     def ready(self):
@@ -121,10 +137,33 @@ def _checked(img, ay):
 
 
 def _read_row(img, ay, index, ocr_fn):
+    """讀一列。狀態讀不清楚就換放大倍率再讀，三種都讀不到才回 unknown。
+
+    「維修」鈕只要任何一次讀到就算有 —— 它只會出現在受損且空閒的艦隊上，
+    本身就是很強的證據。
+    """
+    h, w = img.shape[:2]
+    status, timer, repair_at, raw = "unknown", None, None, []
+    for z in ROW_ZOOMS:
+        st, tm, rp, items = _read_row_once(img, ay, ocr_fn, z)
+        raw += [i[0] for i in items]
+        repair_at = repair_at or rp
+        if st != "unknown":
+            status, timer = st, tm
+            break
+    return Fleet(
+        index=index, anchor_y=int(ay), status=status, timer=timer,
+        repair_at=repair_at, bar=_bar_fill(img, ay),
+        selected=_checked(img, ay),
+        tap_at=(int(0.16 * w), int(ay + 0.035 * h)),
+        raw=raw)
+
+
+def _read_row_once(img, ay, ocr_fn, zoom):
     h, w = img.shape[:2]
     y0, y1 = max(0, int(ay - 0.02 * h)), min(h, int(ay + 0.09 * h))
     x0, x1 = int(0.05 * w), int(0.97 * w)
-    crop = cv2.resize(img[y0:y1, x0:x1], None, fx=ZOOM, fy=ZOOM,
+    crop = cv2.resize(img[y0:y1, x0:x1], None, fx=zoom, fy=zoom,
                       interpolation=cv2.INTER_CUBIC)
     ch, cw = crop.shape[:2]
     items = ocr_fn(crop)
@@ -135,15 +174,15 @@ def _read_row(img, ay, index, ocr_fn):
         fx, fy = cx / cw, cy / ch
         if fy > 0.45:                       # 只看上半部（下半部是英雄頭像）
             continue
-        gx = int(x0 + cx / ZOOM)
-        gy = int(y0 + cy / ZOOM)
+        gx = int(x0 + cx / zoom)
+        gy = int(y0 + cy / zoom)
         if "維修" in t or "维修" in t:
             if fx > 0.84:                   # 按鈕在最右邊
                 repair_at = (gx, gy)
             continue
         if fx < 0.68 or fx > 0.88:          # 狀態格大約在 0.79
             continue
-        if "空閒" in t or "空間" in t or "空闲" in t:
+        if any(k in t for k in IDLE_WORDS):
             status = "idle"
         elif "駐防" in t or "驻防" in t:
             status = "garrison"
@@ -153,19 +192,13 @@ def _read_row(img, ay, index, ocr_fn):
             m = TIMER_RE.search(t)
             if m:
                 status, timer = "timer", int(m.group(1)) * 60 + int(m.group(2))
-
-    return Fleet(
-        index=index, anchor_y=int(ay), status=status, timer=timer,
-        repair_at=repair_at, bar=_bar_fill(img, ay),
-        selected=_checked(img, ay),
-        tap_at=(int(0.16 * w), int(ay + 0.035 * h)),
-        raw=[i[0] for i in items])
+    return status, timer, repair_at, items
 
 
 # --------------------------------------------------------------- 整個畫面
 @dataclass
 class SiegeScreen:
-    kind: str                     # fleets / city / map / unknown
+    kind: str                     # fleets / city / map / reward / unknown
     fleets: list = field(default_factory=list)
     send_at: tuple | None = None  # 「出征」
     close_at: tuple | None = None
@@ -174,6 +207,28 @@ class SiegeScreen:
     targets: dict = field(default_factory=dict)   # 左側清單：名稱 -> 位置
     toast: str | None = None      # 例如「未選擇任何艦隊」
     size: tuple = (0, 0)          # 截圖的 (寬, 高)
+
+
+def _read_title(img, title, ocr_fn):
+    """讀城市彈窗標題裡的城市名稱。讀不完整就回 None（代表不確定）。
+
+    低解析度下實測標題會被讀成「堡壘F」「堡壘P」，少了或錯了代號。
+    這不代表開錯城市，只是沒讀清楚。所以把標題那一條放大幾次重讀，
+    挑一個完整的（類型＋至少兩碼代號）；都不完整就回 None，讓上層再看一次。
+    """
+    h, w = img.shape[:2]
+    first = re.split(r"[：:]", title[0], maxsplit=1)[-1].strip()
+    cands = [first]
+    y0, y1 = max(0, int(title[2] - 0.03 * h)), min(h, int(title[2] + 0.03 * h))
+    for z in (3, 4):
+        band = cv2.resize(img[y0:y1, int(0.15 * w):int(0.85 * w)], None,
+                          fx=z, fy=z, interpolation=cv2.INTER_CUBIC)
+        for t, *_ in ocr_fn(band):
+            if "城市" in t and re.search(r"[：:]", t):
+                cands.append(re.split(r"[：:]", t, maxsplit=1)[-1].strip())
+    complete = [c for c in cands
+                if (st := split_target(c)) and len(st[2]) >= 2]
+    return complete[0] if complete else None
 
 
 def _find(items, *keys):
@@ -190,6 +245,12 @@ def read(img, items=None, ocr_fn=ocr):
     items = items if items is not None else ocr_fn(img)
 
     toast = _find(items, "未選擇任何艦隊", "未选择任何舰队")
+
+    # 「恭喜獲得」之類的獎勵畫面，下方寫「點擊空白區域關閉」
+    close_hint = _find(items, "點擊空白區域關閉", "点击空白区域关闭")
+    if close_hint and not _find(items, "選擇艦隊", "城市："):
+        return SiegeScreen(kind="reward", close_at=(close_hint[1], close_hint[2]),
+                           size=(w, h))
 
     # ---- 選擇艦隊視窗
     if _find(items, "選擇艦隊", "选择舰队"):
@@ -210,7 +271,7 @@ def read(img, items=None, ocr_fn=ocr):
     # ---- 城市彈窗
     title = _find(items, "城市：", "城市:")
     if title:
-        name = re.split(r"[：:]", title[0], maxsplit=1)[-1].strip()
+        name = _read_title(img, title, ocr_fn)
         buttons = {}
         for key in ("集結", "徵募", "守軍", "前往"):
             hit = _find([i for i in items if i[2] / h > 0.55], key)
@@ -271,7 +332,10 @@ def _read_target_list(img, ocr_fn):
 
 # --------------------------------------------------------------- 決策
 # 出現這些字代表畫面要花錢或加速。城戰模式一律不碰，遇到就停下來。
-COST_WORDS = ("鑽石", "钻石", "加速", "花費", "花费", "購買", "购买", "立即完成")
+# 只認「要花」的說法。單獨的「鑽石」不算：實測城戰中會跳「恭喜獲得」
+# 獎勵畫面，上面列著「鑽石 ×60」—— 那是拿到的，程式卻因此停掉。
+COST_WORDS = ("加速", "花費", "花费", "消耗", "購買", "购买", "立即完成",
+              "使用鑽石", "使用钻石")
 
 SEND_BUTTON = "前往"      # 城市彈窗上派艦隊出去的那顆（使用者確認過）
 
@@ -309,15 +373,21 @@ def plan(screen, target, items=(), camera_on_city=False, center_tries=0):
         for f in screen.fleets:
             if f.needs_repair:
                 return Action("tap", f.repair_at, why=f"第 {f.index} 支受損，按維修")
-        # 已勾選但沒準備好的先取消，免得按出征時把它一起送出去
+        # 已勾選但**確定**沒準備好的先取消，免得按出征時把它一起送出去。
+        # 狀態讀不到的不算：實測一次讀不到就把完好的艦隊取消勾選、下一幀
+        # 又勾回來，來回翻。不知道就不要動它。
         for f in screen.fleets:
-            if f.selected and not f.ready:
+            if f.selected and f.surely_not_ready:
                 return Action("tap", f.tap_at,
                               why=f"第 {f.index} 支還沒準備好卻被勾著，取消勾選")
         for f in screen.fleets:
             if f.ready and not f.selected:
                 return Action("tap", f.tap_at,
                               why=f"第 {f.index} 支完好空閒（耐久 {f.bar:.2f}），勾選")
+        # 有勾選的艦隊狀態沒讀清楚 → 先不要出征，再看一次（可能是受損的）
+        if any(f.selected and f.status == "unknown" and not f.needs_repair
+               for f in screen.fleets):
+            return Action("wait", seconds=0.3, why="有勾選的艦隊狀態沒讀清楚，再看一次")
         if any(f.ready and f.selected for f in screen.fleets) and screen.send_at:
             n = sum(f.ready and f.selected for f in screen.fleets)
             return Action("tap", screen.send_at, why=f"出征（{n} 支）")
@@ -326,12 +396,17 @@ def plan(screen, target, items=(), camera_on_city=False, center_tries=0):
         return Action("wait", seconds=wait, why="沒有可出征的艦隊，等倒數")
 
     if screen.kind == "city":
+        if screen.city is None:
+            return Action("wait", seconds=0.3, why="城市標題沒讀清楚，再看一次")
         if not same_target(screen.city, target):
             return Action("reset", why=f"開到的是「{screen.city}」，不是「{target}」")
         if SEND_BUTTON in screen.buttons:
             return Action("tap", screen.buttons[SEND_BUTTON],
                           why=f"城市是「{screen.city}」，按{SEND_BUTTON}")
         return Action("wait", seconds=1, why="城市彈窗還沒完全出現")
+
+    if screen.kind == "reward":
+        return Action("tap", screen.close_at, why="獎勵畫面，點空白處關掉")
 
     if screen.kind == "map":
         # 鏡頭已經停在城市上（剛按過前往、或剛出征完）：直接點正中央的城市
@@ -352,8 +427,15 @@ def find_target(screen, wanted):
     want = split_target(wanted)
     if not want:
         return None
+    loose = None
     for name, pos in screen.targets.items():
         got = split_target(name)
-        if got and got == want:
+        if not got:
+            continue
+        if got == want:
             return name, pos
-    return None
+        # 實測會讀成「堡壘F2」少了「防守」。類型和代號都對、只是前綴沒讀到，
+        # 可以接受；但前綴讀到了而且不一樣（進攻 vs 防守），就不算。
+        if got[0] is None and got[1:] == want[1:]:
+            loose = (name, pos)
+    return loose
