@@ -103,6 +103,9 @@ def main():
     go_presses = 0           # 按了幾次前往還沒看到艦隊視窗
     wrong_city = (None, 0)   # (讀到的錯誤城市, 連續次數)
     unclear_title = 0        # 標題連續讀不清楚幾次
+    fleet_sig = None         # 上次寫進 log 的艦隊狀態
+    waiting_since = None     # 從什麼時候開始一直沒有可派的艦隊
+    last_wait_shot = 0.0
     reason = "正常結束"
 
     while running:
@@ -138,6 +141,15 @@ def main():
                   if 0.12 * h < i[2] < 0.84 * h and "系統" not in i[0]]
         if screen.kind == "fleets":
             center_tries, go_presses = 0, 0
+            # 每支艦隊的完整讀值寫進 log（狀態有變才寫，不洗版）
+            sig = tuple((f.status, f.needs_repair, f.selected,
+                         None if f.bar is None else round(f.bar, 2))
+                        for f in screen.fleets)
+            if sig != fleet_sig:
+                fleet_sig = sig
+                log.line("艦隊讀值：")
+                for f in screen.fleets:
+                    log.line("   " + f.detail())
         elif screen.kind == "city" and siege.same_target(screen.city, args.target):
             center_tries = 0     # 點正中央叫出了正確的彈窗，這招有效
         act = siege.plan(screen, args.target, middle,
@@ -186,6 +198,17 @@ def main():
         if act.why != last_why:
             log.say(act.why)
         last_why = act.why
+
+        # 一直沒有可派的艦隊：過兩分鐘開始，每五分鐘存一張艦隊視窗的圖
+        if act.why.startswith("沒有可出征的艦隊"):
+            waiting_since = waiting_since or time.time()
+            if (time.time() - waiting_since > 120
+                    and time.time() - last_wait_shot > 300):
+                last_wait_shot = time.time()
+                log.snapshot(img, "siege_waiting", items,
+                             f"一直沒有可派的艦隊：{act.why}")
+        elif screen.kind == "fleets":
+            waiting_since = None
 
         if act.kind == "wait":
             time.sleep(act.seconds)

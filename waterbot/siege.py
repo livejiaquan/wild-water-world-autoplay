@@ -94,6 +94,30 @@ class Fleet:
         return (self.status == "idle" and self.repair_at is None
                 and self.bar is not None and self.bar >= BAR_FULL)
 
+    def describe(self):
+        """給人看的一句話。不放會跳動的數字（倒數、耐久小數），
+        這樣同一個狀態不會每秒印一次。"""
+        if self.needs_repair:
+            return "要維修"
+        if self.status == "garrison":
+            return "駐防中"
+        if self.status == "battle":
+            return "交戰中"
+        if self.status == "timer":
+            return "倒數中"
+        if self.status == "idle":
+            if self.bar is None:
+                return "空閒・耐久條讀不到"
+            return "空閒・耐久滿" if self.bar >= BAR_FULL else "空閒・耐久沒滿"
+        return "狀態讀不到"
+
+    def detail(self):
+        """寫進 log 的完整讀值，出問題時拿來查。"""
+        bar = f"{self.bar:.2f}" if self.bar is not None else "None"
+        return (f"第{self.index}支 status={self.status} timer={self.timer} "
+                f"耐久={bar}(滿={BAR_FULL}) 維修鈕={'有' if self.repair_at else '無'} "
+                f"已勾={self.selected} ready={self.ready} OCR={self.raw[:6]}")
+
     @property
     def disagree(self):
         """文字說完好但耐久條說沒滿（或反過來）。這種情況一律不出征。"""
@@ -393,7 +417,9 @@ def plan(screen, target, items=(), camera_on_city=False, center_tries=0):
             return Action("tap", screen.send_at, why=f"出征（{n} 支）")
         timers = [f.timer for f in screen.fleets if f.timer]
         wait = min(max(min(timers) - 1, 1), 5) if timers else 3
-        return Action("wait", seconds=wait, why="沒有可出征的艦隊，等倒數")
+        states = "／".join(f"{f.index} {f.describe()}" for f in screen.fleets)
+        return Action("wait", seconds=wait,
+                      why=f"沒有可出征的艦隊（{states}）")
 
     if screen.kind == "city":
         if screen.city is None:
