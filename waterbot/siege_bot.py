@@ -35,6 +35,7 @@ SETTLE = 0.6            # 點完等畫面動畫跑完再看（彈窗、視窗切
 SAME_BEFORE_FRONT = 3   # 同一個動作重複幾次畫面都沒變，改用前景點擊
 SAME_BEFORE_WARN = 8    # 重複幾次就跳通知
 MAX_TAPS_PER_MIN = 40
+GO_WITHOUT_DIALOG = 4   # 連按幾次「前往」都沒出現艦隊視窗，就判定流程卡住
 
 running = True
 
@@ -95,6 +96,9 @@ def main():
     last_why, same = None, 0
     warned = False
     taps, sends, repairs = [], 0, 0
+    camera_on_city = False   # 鏡頭是否已經停在目標城市上
+    center_tries = 0         # 點正中央叫彈窗試了幾次
+    go_presses = 0           # 按了幾次前往還沒看到艦隊視窗
     reason = "正常結束"
 
     while running:
@@ -128,7 +132,13 @@ def main():
         # 最下面的聊天室常有別人在講鑽石，不能因此停下來
         middle = [i for i in items
                   if 0.12 * h < i[2] < 0.84 * h and "系統" not in i[0]]
-        act = siege.plan(screen, args.target, middle)
+        if screen.kind == "fleets":
+            center_tries, go_presses = 0, 0
+        elif screen.kind == "city" and siege.same_target(screen.city, args.target):
+            center_tries = 0     # 點正中央叫出了正確的彈窗，這招有效
+        act = siege.plan(screen, args.target, middle,
+                         camera_on_city=camera_on_city,
+                         center_tries=center_tries)
 
         if act.kind == "reset":
             hit = siege.find_target(
@@ -188,8 +198,23 @@ def main():
         log.action("城戰", None, act.why, act.at, "")
         if act.why.startswith("出征"):
             sends += sum(f.ready and f.selected for f in screen.fleets)
+            camera_on_city = True          # 出征完鏡頭還停在城市上
         elif "維修" in act.why:
             repairs += 1
+        elif "按前往" in act.why:
+            # 鏡頭沒對準時，前往只會把鏡頭移過去；下一步改點正中央的城市
+            camera_on_city = True
+            go_presses += 1
+            if go_presses > GO_WITHOUT_DIALOG:
+                log.say(f"連按 {go_presses} 次前往都沒出現艦隊視窗，先停下來")
+                log.snapshot(img, "siege_go_loop", items, "前往一直沒開出艦隊視窗")
+                notify("城戰派兵", "按前往一直沒出現出征畫面，需要看一下")
+                reason = "前往一直沒開出艦隊視窗"
+                break
+        elif act.why.startswith("鏡頭已經在城市上"):
+            center_tries += 1
+        elif act.why.startswith("點左側目標") or act.why.startswith("改點左側目標"):
+            camera_on_city, center_tries = False, 0
         time.sleep(SETTLE)
 
     kb.restore()

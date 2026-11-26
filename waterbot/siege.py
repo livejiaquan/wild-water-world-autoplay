@@ -173,6 +173,7 @@ class SiegeScreen:
     buttons: dict = field(default_factory=dict)   # 城市彈窗的四顆鈕
     targets: dict = field(default_factory=dict)   # 左側清單：名稱 -> 位置
     toast: str | None = None      # 例如「未選擇任何艦隊」
+    size: tuple = (0, 0)          # 截圖的 (寬, 高)
 
 
 def _find(items, *keys):
@@ -204,7 +205,7 @@ def read(img, items=None, ocr_fn=ocr):
         return SiegeScreen(
             kind="fleets", fleets=fleets,
             send_at=(send[1], send[2]) if send else None,
-            toast=toast[0] if toast else None)
+            toast=toast[0] if toast else None, size=(w, h))
 
     # ---- 城市彈窗
     title = _find(items, "城市：", "城市:")
@@ -215,15 +216,16 @@ def read(img, items=None, ocr_fn=ocr):
             hit = _find([i for i in items if i[2] / h > 0.55], key)
             if hit:
                 buttons[key] = (hit[1], hit[2])
-        return SiegeScreen(kind="city", city=name, buttons=buttons)
+        return SiegeScreen(kind="city", city=name, buttons=buttons, size=(w, h))
 
     # ---- 地圖：讀左側目標清單
     # 整張讀會漏字：實測「防守堡壘E1」被讀成「防守堡壘E」，代號整個不見。
     # 把左邊那一條裁出來放大三倍重讀就正確了，所以清單一律放大讀。
     if not (_find(items, "城戰進行中", "城战进行中")
             or any(cx / w < 0.2 and split_target(t) for t, cx, cy, c in items)):
-        return SiegeScreen(kind="unknown")
-    return SiegeScreen(kind="map", targets=_read_target_list(img, ocr_fn))
+        return SiegeScreen(kind="unknown", size=(w, h))
+    return SiegeScreen(kind="map", targets=_read_target_list(img, ocr_fn),
+                       size=(w, h))
 
 
 # 同一塊清單用幾種不同的裁切寬度與放大倍率各讀一次。
@@ -273,6 +275,14 @@ COST_WORDS = ("鑽石", "钻石", "加速", "花費", "花费", "購買", "购�
 
 SEND_BUTTON = "前往"      # 城市彈窗上派艦隊出去的那顆（使用者確認過）
 
+# 「前往」在鏡頭還沒對準城市時只會把鏡頭移過去、關掉彈窗，不會開出征畫面；
+# 鏡頭已經在城市上時才會開出征畫面。實測影片 IMG_8927：5.8 秒按前往只移了
+# 鏡頭，10.8 秒第三次叫出彈窗才出現選擇艦隊。鏡頭移好後城市固定在畫面
+# 正中央（四個時間點量到 0.49–0.50, 0.50–0.51），但標籤被戰鬥特效蓋住，
+# OCR 讀成「PEY遴盟F2」「堡些记」，所以靠位置點，不靠讀字。
+CITY_CENTER = (0.50, 0.51)
+CENTER_TRIES = 2          # 點正中央幾次叫不出正確彈窗，就退回點左側清單
+
 
 @dataclass
 class Action:
@@ -282,7 +292,7 @@ class Action:
     why: str = ""
 
 
-def plan(screen, target, items=()):
+def plan(screen, target, items=(), camera_on_city=False, center_tries=0):
     """看目前畫面，決定**下一個**動作。一次只回一個，做完要重新看畫面。
 
     原則：
@@ -324,6 +334,11 @@ def plan(screen, target, items=()):
         return Action("wait", seconds=1, why="城市彈窗還沒完全出現")
 
     if screen.kind == "map":
+        # 鏡頭已經停在城市上（剛按過前往、或剛出征完）：直接點正中央的城市
+        if camera_on_city and center_tries < CENTER_TRIES and screen.size[0]:
+            w, h = screen.size
+            return Action("tap", (int(CITY_CENTER[0] * w), int(CITY_CENTER[1] * h)),
+                          why="鏡頭已經在城市上，點正中央的城市叫出彈窗")
         hit = find_target(screen, target)
         if hit:
             return Action("tap", hit[1], why=f"點左側目標「{hit[0]}」")

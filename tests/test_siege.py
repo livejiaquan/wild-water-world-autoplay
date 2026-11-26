@@ -92,6 +92,16 @@ for want in ("防守堡壘F2", "防守堡壘E1", "防守營地E0", "進攻營地
     check(f"找得到「{want}」", bool(hit), True)
 check("不會把 F2 當成 E1", siege.find_target(s, "防守堡壘F2")[0] != "防守堡壘EI", True)
 
+print("\n── 鏡頭已經在城市上時，點正中央而不是清單 ──")
+s = siege.read(cv2.imread(os.path.join(FIX, "map_target_list.jpg")))
+a = siege.plan(s, "防守堡壘F2", camera_on_city=True, center_tries=0)
+w, h = s.size
+check("點正中央", (a.kind, a.at), ("tap", (int(0.50 * w), int(0.51 * h))))
+a = siege.plan(s, "防守堡壘F2", camera_on_city=True, center_tries=siege.CENTER_TRIES)
+check("正中央試太多次就退回點清單", a.why.startswith("點左側目標"), True)
+a = siege.plan(s, "防守堡壘F2", camera_on_city=False)
+check("鏡頭不在城市上時點清單", a.why.startswith("點左側目標"), True)
+
 print("\n── 代號正規化（OCR 會把 1 讀成 I、0 讀成 O）──")
 check("EI = E1", siege.same_target("防守堡壘EI", "防守堡壘E1"), True)
 check("FO = F0", siege.same_target("進攻營地FO", "進攻營地F0"), True)
