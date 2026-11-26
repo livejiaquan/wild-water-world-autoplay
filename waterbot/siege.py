@@ -30,7 +30,11 @@ CHECK_MIN = 0.05           # 綠色勾勾佔比 >= 這個算已勾選（實測 0
 TIMER_RE = re.compile(r"(\d{1,2})\s*[:：]\s*(\d{2})")
 # 「空閒中」實測會被讀成「空間中」「空開中」（閒→間、開，形近字）
 IDLE_WORDS = ("空閒", "空間", "空開", "空闲", "空间", "空开")
-ROW_ZOOMS = (3, 4, 5)      # 狀態讀不到就換倍率重讀（實測 ×3 讀錯時 ×4 常讀對）
+ROW_ZOOMS = (3, 4, 5)
+# 維修鈕用顏色找的門檻。實測藍色色塊面積（佔右側那一塊的比例）：
+#   空閒＋維修鈕 0.196–0.202；倒數列的 >> 鈕 0.167–0.172；
+#   空閒且被勾選時只有藍色外框 0.076–0.092；其他 0
+REPAIR_BLUE_MIN = 0.14      # 狀態讀不到就換倍率重讀（實測 ×3 讀錯時 ×4 常讀對）
 
 
 # --------------------------------------------------------------- 文字工具
@@ -70,6 +74,7 @@ class Fleet:
     selected: bool = False        # 是否已勾選
     tap_at: tuple = (0, 0)        # 要勾選這支艦隊時點哪裡（艦船圖）
     raw: list = field(default_factory=list)  # 放大後 OCR 讀到的字，除錯用
+    repair_by: str | None = None  # 維修鈕是怎麼找到的：「字」或「顏色(面積)」
 
     @property
     def busy(self):
@@ -84,15 +89,18 @@ class Fleet:
     @property
     def surely_not_ready(self):
         """**確定**不能出征。讀不到狀態（unknown）不算 —— 不知道就不要動它。"""
-        return (self.busy or self.needs_repair
-                or (self.status == "idle" and self.bar is not None
-                    and self.bar < BAR_FULL))
+        return self.busy or self.needs_repair
 
     @property
     def ready(self):
-        """可以出征：空閒、沒有維修鈕、耐久條確實是滿的。三者缺一不可。"""
-        return (self.status == "idle" and self.repair_at is None
-                and self.bar is not None and self.bar >= BAR_FULL)
+        """可以出征：狀態是空閒（沒有倒數），而且右邊沒有維修鈕。
+
+        耐久條不參與判斷。原本用它當第二個證據，但它是靠位置去量的，
+        使用者的 Mac 視窗比例不同，滿格被量成沒滿，結果完好的艦隊都不派。
+        維修鈕現在有「讀字」和「看顏色」兩種找法，比耐久條可靠；
+        而且受損的艦隊一定會出現維修鈕（使用者確認的規則）。
+        """
+        return self.status == "idle" and self.repair_at is None
 
     def describe(self):
         """給人看的一句話。不放會跳動的數字（倒數、耐久小數），
@@ -106,16 +114,14 @@ class Fleet:
         if self.status == "timer":
             return "倒數中"
         if self.status == "idle":
-            if self.bar is None:
-                return "空閒・耐久條讀不到"
-            return "空閒・耐久滿" if self.bar >= BAR_FULL else "空閒・耐久沒滿"
+            return "空閒・可出征"
         return "狀態讀不到"
 
     def detail(self):
         """寫進 log 的完整讀值，出問題時拿來查。"""
         bar = f"{self.bar:.2f}" if self.bar is not None else "None"
         return (f"第{self.index}支 status={self.status} timer={self.timer} "
-                f"耐久={bar}(滿={BAR_FULL}) 維修鈕={'有' if self.repair_at else '無'} "
+                f"耐久={bar}(滿={BAR_FULL}) 維修鈕={self.repair_by or '無'} "
                 f"已勾={self.selected} ready={self.ready} OCR={self.raw[:6]}")
 
     @property
@@ -125,16 +131,29 @@ class Fleet:
                 and self.bar is not None and self.bar < BAR_FULL)
 
 
-def _bar_fill(img, ay):
+D_DEFAULT = 0.197        # 讀不到狀態字時，d 用「畫面高度 × 這個值」估
+
+
+def _ruler(img, ax, status_x):
+    """這一列的尺：「遠征艦隊」字樣到狀態字的距離。"""
+    h = img.shape[0]
+    if status_x is not None and status_x - ax > 0.08 * h:
+        return status_x - ax
+    return D_DEFAULT * h
+
+
+def _bar_fill(img, ax, ay, d):
     """艦船下方黃色耐久條的填滿比例。
 
     只數「深色空槽」，其餘都算填滿。條的右端是淺黃漸層，
     用黃色門檻去數會漏掉而系統性偏低（實測滿格只量到 0.85）。
     """
-    h, w = img.shape[:2]
-    x0, x1 = int(0.04 * w), int(0.30 * w)
-    y0, y1 = int(ay + 0.045 * h), int(ay + 0.10 * h)
-    hsv = cv2.cvtColor(img[y0:y1, x0:x1], cv2.COLOR_BGR2HSV)
+    x0, x1 = max(0, int(ax - 0.725 * d)), max(1, int(ax - 0.117 * d))
+    y0, y1 = int(ay + 0.228 * d), int(ay + 0.507 * d)
+    roi = img[y0:y1, x0:x1]
+    if roi.size == 0:
+        return None
+    hsv = cv2.cvtColor(roi, cv2.COLOR_BGR2HSV)
     yellow = ((hsv[..., 0] >= 10) & (hsv[..., 0] <= 38)
               & (hsv[..., 1] >= 80) & (hsv[..., 2] >= 150))
     if yellow.sum() < 10:
@@ -149,9 +168,9 @@ def _bar_fill(img, ay):
     return 1.0 - dark[left:right].sum() / total
 
 
-def _checked(img, ay):
-    h, w = img.shape[:2]
-    roi = img[int(ay - 0.035 * h):int(ay + 0.005 * h), int(0.03 * w):int(0.12 * w)]
+def _checked(img, ax, ay, d):
+    roi = img[max(0, int(ay - 0.178 * d)):int(ay + 0.025 * d),
+              max(0, int(ax - 0.749 * d)):max(1, int(ax - 0.538 * d))]
     if roi.size == 0:
         return False
     hsv = cv2.cvtColor(roi, cv2.COLOR_BGR2HSV)
@@ -160,27 +179,65 @@ def _checked(img, ay):
     return g.mean() >= CHECK_MIN
 
 
-def _read_row(img, ay, index, ocr_fn):
+def _read_row(img, ax, ay, index, ocr_fn):
     """讀一列。狀態讀不清楚就換放大倍率再讀，三種都讀不到才回 unknown。
 
     「維修」鈕只要任何一次讀到就算有 —— 它只會出現在受損且空閒的艦隊上，
     本身就是很強的證據。
     """
     h, w = img.shape[:2]
-    status, timer, repair_at, raw = "unknown", None, None, []
+    status, timer, repair_at, raw, status_x = "unknown", None, None, [], None
     for z in ROW_ZOOMS:
-        st, tm, rp, items = _read_row_once(img, ay, ocr_fn, z)
+        st, tm, rp, items, sx = _read_row_once(img, ay, ocr_fn, z)
         raw += [i[0] for i in items]
         repair_at = repair_at or rp
         if st != "unknown":
-            status, timer = st, tm
+            status, timer, status_x = st, tm, sx
             break
+
+    # 「維修」兩個字在某些解析度下讀不出來（使用者回報：看得到維修鈕卻不修）。
+    # 狀態**確定是空閒**時，右邊那顆藍色按鈕就只可能是維修鈕，改用顏色找。
+    # 狀態讀不到時不用這招：倒數中的列也有一顆藍色 >> 鈕，不知道它做什麼，
+    # 可能是要花鑽石的加速，絕對不能誤按。
+    repair_by = "字" if repair_at else None
+    if repair_at is None and status == "idle":
+        area, centre = _blue_button(img, ay, status_x)
+        if area >= REPAIR_BLUE_MIN:
+            repair_at, repair_by = centre, f"顏色({area:.2f})"
+    d = _ruler(img, ax, status_x)
     return Fleet(
         index=index, anchor_y=int(ay), status=status, timer=timer,
-        repair_at=repair_at, bar=_bar_fill(img, ay),
-        selected=_checked(img, ay),
-        tap_at=(int(0.16 * w), int(ay + 0.035 * h)),
-        raw=raw)
+        repair_at=repair_at, bar=_bar_fill(img, ax, ay, d),
+        selected=_checked(img, ax, ay, d),
+        tap_at=(int(ax - 0.445 * d), int(ay + 0.178 * d)),   # 艦船圖
+        raw=raw, repair_by=repair_by)
+
+
+def _blue_button(img, ay, status_x=None):
+    """在狀態字右邊找藍色按鈕，回傳 (面積比例, 中心點)。
+
+    搜尋範圍從狀態字往右，而不是固定的視窗比例：寬一點的視窗裡
+    對話框位置會偏，固定比例可能整個找錯地方。面積比例以固定寬度
+    （視窗寬的 0.195）計算，門檻在不同搜尋起點下才有可比性。
+    """
+    h, w = img.shape[:2]
+    x1 = int(0.995 * w)
+    x0 = int(status_x + 0.06 * w) if status_x is not None else int(0.80 * w)
+    x0 = max(0, min(x0, x1 - int(0.10 * w)))
+    norm_w = int(0.195 * w)
+    y0, y1 = max(0, int(ay - 0.025 * h)), min(h, int(ay + 0.045 * h))
+    roi = img[y0:y1, x0:x1]
+    if roi.size == 0:
+        return 0.0, None
+    hsv = cv2.cvtColor(roi, cv2.COLOR_BGR2HSV)
+    m = ((hsv[..., 0] >= 95) & (hsv[..., 0] <= 125)
+         & (hsv[..., 1] >= 110) & (hsv[..., 2] >= 150)).astype(np.uint8)
+    n, _, st, cen = cv2.connectedComponentsWithStats(m)
+    if n <= 1:
+        return 0.0, None
+    i = 1 + int(np.argmax(st[1:, cv2.CC_STAT_AREA]))
+    return (st[i, cv2.CC_STAT_AREA] / (norm_w * (y1 - y0)),
+            (int(x0 + cen[i][0]), int(y0 + cen[i][1])))
 
 
 def _read_row_once(img, ay, ocr_fn, zoom):
@@ -192,7 +249,8 @@ def _read_row_once(img, ay, ocr_fn, zoom):
     ch, cw = crop.shape[:2]
     items = ocr_fn(crop)
 
-    status, timer, repair_at = "unknown", None, None
+    status, timer, repair_at, status_x = "unknown", None, None, None
+    repair_cands = []
     for text, cx, cy, conf in items:
         t = re.sub(r"\s+", "", text)
         fx, fy = cx / cw, cy / ch
@@ -200,14 +258,13 @@ def _read_row_once(img, ay, ocr_fn, zoom):
             continue
         gx = int(x0 + cx / zoom)
         gy = int(y0 + cy / zoom)
-        if "維修" in t or "维修" in t:
-            if fx > 0.84:                   # 按鈕在最右邊
-                repair_at = (gx, gy)
+        if "修" in t:                       # 維修／维修／維脩被讀錯一個字也認
+            repair_cands.append((gx, gy, fx))
             continue
-        if fx < 0.68 or fx > 0.88:          # 狀態格大約在 0.79
+        if fx < 0.60 or fx > 0.92:          # 狀態格大約在 0.79，留寬一點給不同比例的視窗
             continue
         if any(k in t for k in IDLE_WORDS):
-            status = "idle"
+            status, status_x = "idle", gx
         elif "駐防" in t or "驻防" in t:
             status = "garrison"
         elif "交戰" in t or "交战" in t:
@@ -216,7 +273,12 @@ def _read_row_once(img, ay, ocr_fn, zoom):
             m = TIMER_RE.search(t)
             if m:
                 status, timer = "timer", int(m.group(1)) * 60 + int(m.group(2))
-    return status, timer, repair_at, items
+    # 維修鈕在狀態字的右邊。用相對位置判斷，不用固定的視窗比例 ——
+    # 使用者的 Mac 視窗比例（0.58）跟手機錄影（0.46）不同，固定比例會錯位。
+    for gx, gy, fx in repair_cands:
+        if (status_x is not None and gx > status_x) or fx > 0.80:
+            repair_at = (gx, gy)
+    return status, timer, repair_at, items, status_x
 
 
 # --------------------------------------------------------------- 整個畫面
@@ -278,14 +340,15 @@ def read(img, items=None, ocr_fn=ocr):
 
     # ---- 選擇艦隊視窗
     if _find(items, "選擇艦隊", "选择舰队"):
-        anchors = sorted(y for t, x, y, c in items
+        anchors = sorted((y, x) for t, x, y, c in items
                          if ("遠征" in t or "远征" in t) and 0.15 < y / h < 0.75)
         # 同一列可能被讀成兩段，距離太近的合併
         rows = []
-        for y in anchors:
-            if not rows or y - rows[-1] > 0.05 * h:
-                rows.append(y)
-        fleets = [_read_row(img, y, i + 1, ocr_fn) for i, y in enumerate(rows)]
+        for y, x in anchors:
+            if not rows or y - rows[-1][0] > 0.05 * h:
+                rows.append((y, x))
+        fleets = [_read_row(img, x, y, i + 1, ocr_fn)
+                  for i, (y, x) in enumerate(rows)]
         send = _find(items, "出征")
         return SiegeScreen(
             kind="fleets", fleets=fleets,

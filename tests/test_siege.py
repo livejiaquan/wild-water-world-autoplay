@@ -73,7 +73,7 @@ for name, rows in FLEETS.items():
         if timer is not None:
             check(f"{tag} 倒數秒數", f.timer, timer)
         check(f"{tag} 已勾選", f.selected, sel)
-        check(f"{tag} 決定（修/派/等），耐久 {f.bar:.2f}", decision(f), dec)
+        check(f"{tag} 決定（修/派/等）", decision(f), dec)
 
 s = siege.read(cv2.imread(os.path.join(FIX, "fleets_none_selected.jpg")))
 check("\n讀到「未選擇任何艦隊」提示", bool(s.toast), True)
@@ -156,6 +156,61 @@ check("「花費 50 鑽石」要停", siege.plan(siege.SiegeScreen("unknown"), "
                                     [("花費50鑽石", 1, 1, 1.0)]).kind, "stop")
 check("「加速」要停", siege.plan(siege.SiegeScreen("unknown"), "防守堡壘F2",
                                 [("加速", 1, 1, 1.0)]).kind, "stop")
+
+print("\n── 讀不到「維修」兩個字時，靠顏色也要找到維修鈕 ──")
+# 使用者回報：畫面上明明有維修鈕，程式卻說「空閒・耐久沒滿」不去修。
+# 這裡故意把 OCR 讀到的「修」字全部丟掉，模擬那台電腦的情況。
+from ocr import ocr as _real_ocr
+
+
+def blind_ocr(img, *a, **k):
+    return [i for i in _real_ocr(img, *a, **k) if "修" not in i[0]]
+
+
+# (畫面, 每一列是否應該判成要維修)
+BLIND = {
+    "fleets_repair_needed":  [True, False, False],
+    "lowres_three_damaged":  [True, True, True],
+    "fleets_idle_full":      [False, False, False],   # 第 2 支空閒、耐久滿、有勾選外框
+    "fleets_selected_idle":  [False, False, False],   # 第 3 支同上
+    "lowres_all_ready":      [False, False, False],
+    "lowres_send_one":       [False, False, False],
+    "fleets_all_timers":     [False, False, False],   # 倒數列有藍色 >> 鈕，絕不能當成維修
+}
+for name, want in BLIND.items():
+    img = cv2.imread(os.path.join(FIX, name + ".jpg"))
+    sc = siege.read(img, ocr_fn=blind_ocr)
+    got = [f.needs_repair for f in sc.fleets]
+    how = [f.repair_by or "-" for f in sc.fleets]
+    check(f"{name} 要維修 {how}", got, want)
+
+print("\n── 比較寬的視窗（使用者的 Mac 是 0.58，錄影是 0.46）──")
+# 使用者回報滿耐久被判成「耐久沒滿」：位置是用視窗比例算的，寬視窗下全偏掉。
+# 這裡把畫面左右補邊撐到 0.58，判斷、勾選、點擊位置都要跟原本一樣。
+def pillar(img, aspect=0.578):
+    h, w = img.shape[:2]
+    pad = (int(h * aspect) - w) // 2
+    return cv2.copyMakeBorder(img, 0, 0, pad, pad, cv2.BORDER_CONSTANT,
+                              value=(20, 20, 20)), pad
+
+
+def summary(sc):
+    return [("修" if f.needs_repair else "派" if f.ready else "等", f.selected)
+            for f in sc.fleets]
+
+
+for name in ("fleets_repair_needed", "fleets_idle_full", "fleets_selected_idle",
+             "lowres_all_ready", "lowres_three_damaged", "fleets_all_timers"):
+    img = cv2.imread(os.path.join(FIX, name + ".jpg"))
+    base = siege.read(img)
+    wide_img, pad = pillar(img)
+    wide = siege.read(wide_img)
+    blind_wide = siege.read(wide_img, ocr_fn=blind_ocr)
+    check(f"{name} 寬視窗判斷一樣", summary(wide), summary(base))
+    check(f"{name} 寬視窗＋讀不到維修字也一樣", summary(blind_wide), summary(base))
+    drift = max(abs(b.tap_at[0] - pad - a.tap_at[0]) + abs(b.tap_at[1] - a.tap_at[1])
+                for a, b in zip(base.fleets, wide.fleets))
+    check(f"{name} 點擊位置偏差 <= 4px", drift <= 4, True)
 
 print("\n── 代號正規化（OCR 會把 1 讀成 I、0 讀成 O）──")
 check("EI = E1", siege.same_target("防守堡壘EI", "防守堡壘E1"), True)

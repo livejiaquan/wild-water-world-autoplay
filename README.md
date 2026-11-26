@@ -46,8 +46,14 @@ ones first. It taps the target, checks the city popup's title matches, taps
 ones and sends them; with nothing available it waits out the timers in the
 dialog. It stops at 20:00.
 
-A fleet is sent only when two independent signals agree it is intact: no
-維修 button, and a full durability bar read by colour rather than OCR.
+A fleet is sent when its status reads idle (no countdown) and no 維修
+button is present; a damaged fleet always shows one. The button is found by
+its text, and failing that, on a fleet known to be idle, by its colour — not
+on other rows, where a blue `>>` button of unknown effect sits. Positions are
+taken relative to each row's 遠征艦隊 label rather than as fractions of the
+window, so a wider or rescaled Mac window does not shift them. The durability
+bar is logged but not used: measured by position, it read full bars as
+partial on a wider window.
 Repair is always the wait-it-out kind; nothing that costs diamonds or speeds
 anything up is ever tapped, and any such wording in the middle of the screen
 halts the run with a notification. The mode lives in `siege.py` (reading)
