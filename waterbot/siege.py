@@ -284,7 +284,7 @@ def _read_row_once(img, ay, ocr_fn, zoom):
 # --------------------------------------------------------------- 整個畫面
 @dataclass
 class SiegeScreen:
-    kind: str                     # fleets / city / map / reward / unknown
+    kind: str                     # fleets / city / panel / map / reward / unknown
     fleets: list = field(default_factory=list)
     send_at: tuple | None = None  # 「出征」
     close_at: tuple | None = None
@@ -315,6 +315,19 @@ def _read_title(img, title, ocr_fn):
     complete = [c for c in cands
                 if (st := split_target(c)) and len(st[2]) >= 2]
     return complete[0] if complete else None
+
+
+def _close_x(img, top_y):
+    """面板右上角紅色 ✕ 的位置。實測在 (0.88w, 標題同一列)。"""
+    h, w = img.shape[:2]
+    y0, y1 = max(0, int(top_y - 0.04 * h)), min(h, int(top_y + 0.04 * h))
+    x0 = int(0.65 * w)
+    px = img[y0:y1, x0:].astype(int)
+    red = (px[:, :, 2] > 170) & (px[:, :, 1] < 90) & (px[:, :, 0] < 90)
+    ys, xs = np.nonzero(red)
+    if len(xs) >= 40:
+        return int(xs.mean()) + x0, int(ys.mean()) + y0
+    return int(0.88 * w), int(top_y)
 
 
 def _find(items, *keys):
@@ -363,11 +376,20 @@ def read(img, items=None, ocr_fn=ocr, want_list=True):
     if title:
         name = _read_title(img, title, ocr_fn)
         buttons = {}
-        for key in ("集結", "徵募", "守軍", "前往"):
+        for key in ("集結", "徵募", "守軍", "前往", "進攻", "进攻"):
             hit = _find([i for i in items if i[2] / h > 0.55], key)
             if hit:
                 buttons[key] = (hit[1], hit[2])
         return SiegeScreen(kind="city", city=name, buttons=buttons, size=(w, h))
+
+    # ---- 「城市爭奪戰」總覽面板（今日城戰任務、在線獎勵）
+    # 實測 IMG_8939 141–204 秒一直開著。它也有「城戰進行中」字樣，
+    # 舊版會把它當成地圖，一直點正中央（點到面板裡的獎勵說明），永遠叫不出城市。
+    panel = _find(items, "城市爭奪戰", "城市争夺战", "今日城戰任務", "今日城战任务")
+    if panel:
+        head = _find(items, "城市爭奪戰", "城市争夺战")
+        top_y = head[2] if head else panel[2] - 0.14 * h
+        return SiegeScreen(kind="panel", close_at=_close_x(img, top_y), size=(w, h))
 
     # ---- 地圖：讀左側目標清單
     # 整張讀會漏字：實測「防守堡壘E1」被讀成「防守堡壘E」，代號整個不見。
@@ -429,6 +451,7 @@ COST_WORDS = ("加速", "花費", "花费", "消耗", "購買", "购买", "立�
               "使用鑽石", "使用钻石")
 
 SEND_BUTTON = "前往"      # 城市彈窗上派艦隊出去的那顆（使用者確認過）
+ATTACK_BUTTONS = ("進攻", "进攻")
 
 # 「前往」在鏡頭還沒對準城市時只會把鏡頭移過去、關掉彈窗，不會開出征畫面；
 # 鏡頭已經在城市上時才會開出征畫面。實測影片 IMG_8927：5.8 秒按前往只移了
@@ -501,7 +524,16 @@ def plan(screen, target, items=(), camera_on_city=False, center_tries=0,
         if SEND_BUTTON in screen.buttons:
             return Action("tap", screen.buttons[SEND_BUTTON],
                           why=f"城市是「{screen.city}」，按{SEND_BUTTON}")
+        # 敵方城市的彈窗可能是「進攻」而不是「前往」（GitHub 上 fkssj 的
+        # 城戰腳本先找進攻、找不到才找前往）。我們的錄影只有防守城市，沒驗證過。
+        for key in ATTACK_BUTTONS:
+            if key in screen.buttons:
+                return Action("tap", screen.buttons[key],
+                              why=f"城市是「{screen.city}」，按進攻（等同前往）")
         return Action("wait", seconds=1, why="城市彈窗還沒完全出現")
+
+    if screen.kind == "panel":
+        return Action("tap", screen.close_at, why="城市爭奪戰面板，按右上角 ✕ 關掉")
 
     if screen.kind == "reward":
         return Action("tap", screen.close_at, why="獎勵畫面，點空白處關掉")

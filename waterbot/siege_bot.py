@@ -43,6 +43,7 @@ WRONG_CITY_CONFIRM = 2  # 連續幾次讀到同一個「錯的城市」才算數
 UNCLEAR_TITLE_MAX = 6   # 標題連續幾次讀不清楚，就當成正中央那座城、直接按前往
 CENTRE_MISS_WARN = 4    # 點正中央幾次都沒叫出彈窗，就通知使用者把鏡頭移回城市
 CENTRE_MISS_PAUSE = 5   # 之後每次點正中央之間等幾秒（不要一直亂點地圖）
+UNKNOWN_WARN = 30       # 連續幾秒看不懂畫面就通知（不亂點，等人處理）
 
 running = True
 
@@ -113,6 +114,8 @@ def main():
     centre_misses = 0        # 點正中央後連續幾次沒叫出彈窗
     centre_warned = False
     city_seen = None         # 最近一次彈窗讀到的城市名
+    unknown_since = None     # 從什麼時候開始看不懂畫面
+    unknown_warned = False
     fleet_sig = None         # 上次寫進 log 的艦隊狀態
     waiting_since = None     # 從什麼時候開始一直沒有可派的艦隊
     last_wait_shot = 0.0
@@ -167,6 +170,17 @@ def main():
         if screen.kind == "city" and screen.city and screen.city != city_seen:
             city_seen = screen.city
             log.line(f"彈窗城市：{screen.city}")
+        if screen.kind == "unknown":
+            unknown_since = unknown_since or time.time()
+            if time.time() - unknown_since > UNKNOWN_WARN and not unknown_warned:
+                log.say(f"已經 {UNKNOWN_WARN} 秒看不懂畫面，先不點，等你處理")
+                log.snapshot(img, "siege_unknown", items, "一直看不懂畫面")
+                notify("城戰派兵", "畫面停在程式看不懂的地方，請回到城戰地圖")
+                unknown_warned = True
+        else:
+            if unknown_warned:
+                log.say("✅ 回到看得懂的畫面，繼續")
+            unknown_since, unknown_warned = None, False
         act = siege.plan(screen, args.target, middle,
                          camera_on_city=camera_on_city,
                          center_tries=center_tries, centre_only=True)
@@ -265,7 +279,7 @@ def main():
             camera_on_city = True          # 出征完鏡頭還停在城市上
         elif "維修" in act.why:
             repairs += 1
-        elif "按前往" in act.why:
+        elif "按前往" in act.why or "按進攻" in act.why:
             # 鏡頭沒對準時，前往只會把鏡頭移過去；下一步改點正中央的城市
             camera_on_city = True
             go_presses += 1

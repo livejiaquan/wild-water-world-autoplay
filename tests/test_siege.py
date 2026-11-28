@@ -219,6 +219,29 @@ for name in ("fleets_repair_needed", "fleets_idle_full", "fleets_selected_idle",
                 for a, b in zip(base.fleets, wide.fleets))
     check(f"{name} 點擊位置偏差 <= 4px", drift <= 4, True)
 
+print("\n── 點中央模式的實機畫面（IMG_8939）──")
+# 城市爭奪戰面板也寫著「城戰進行中」，舊版當成地圖、一直點正中央。
+for name in ("lowres_war_panel", "lowres_war_panel2"):
+    img = cv2.imread(os.path.join(FIX, name + ".jpg"))
+    sc = siege.read(img, want_list=False)
+    a = siege.plan(sc, None, centre_only=True)
+    h, w = img.shape[:2]
+    check(f"{name} 認成面板", sc.kind, "panel")
+    # 右上角紅色 ✕ 目視在 (0.88, 0.20)
+    check(f"{name} 點的是右上角 ✕",
+          a.kind == "tap" and abs(a.at[0] / w - 0.88) < 0.03
+          and abs(a.at[1] / h - 0.20) < 0.03, True)
+# 鏡頭停在城市上：點的位置要落在「堡壘F2」標籤上（OCR 量到 0.49, 0.51）
+img = cv2.imread(os.path.join(FIX, "lowres_map_on_city.jpg"))
+sc = siege.read(img, want_list=False)
+a = siege.plan(sc, None, centre_only=True)
+h, w = img.shape[:2]
+check("鏡頭在城市上：認成地圖", sc.kind, "map")
+check("點的位置離城市標籤 < 3% 畫面",
+      abs(a.at[0] / w - 0.49) < 0.03 and abs(a.at[1] / h - 0.51) < 0.03, True)
+s2 = siege.SiegeScreen("city", city="堡壘F2", buttons={"進攻": (100, 900)})
+check("敵城只有「進攻」鈕也會按", siege.plan(s2, None, centre_only=True).at, (100, 900))
+
 print("\n── 代號正規化（OCR 會把 1 讀成 I、0 讀成 O）──")
 check("EI = E1", siege.same_target("防守堡壘EI", "防守堡壘E1"), True)
 check("FO = F0", siege.same_target("進攻營地FO", "進攻營地F0"), True)

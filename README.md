@@ -48,7 +48,9 @@ fleets, selects intact idle ones and sends them; with nothing available it
 waits out the timers in the dialog. It never reads the left-hand list, which
 is often longer than the screen. If tapping the centre stops opening the
 popup, it notifies the player to move the camera back and keeps trying.
-`--target 防守堡壘F2` adds a check that the popup title matches. It stops
+The 城市爭奪戰 overview panel is closed with its ✕, reward screens are
+dismissed, and after 30 seconds on an unrecognised screen it stops tapping
+and notifies. `--target 防守堡壘F2` adds a check that the popup title matches. It stops
 at 20:00.
 
 A fleet is sent when its status reads idle (no countdown) and no 維修
