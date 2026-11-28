@@ -1,12 +1,15 @@
 #!/usr/bin/env python3
-"""城戰自動派兵：一直把完好的艦隊派到指定目標，受損的先維修。
+"""城戰自動派兵：一直把完好的艦隊派到畫面中央那座城，受損的先維修。
 
-    python3 siege_bot.py --target 防守堡壘F2
-    python3 siege_bot.py --target 防守堡壘F2 --dry-run    # 只說它想做什麼
+開始前，使用者自己把鏡頭移到要打的城市上（城市停在畫面正中央）。
+
+    python3 siege_bot.py
+    python3 siege_bot.py --target 防守堡壘F2   # 多一道檢查：彈窗標題要對得上
+    python3 siege_bot.py --dry-run             # 只說它想做什麼
 
 流程（每次只做一個動作，做完重新看畫面確認，再決定下一步）：
-    地圖  → 點左側清單的目標 → 城市彈窗
-    彈窗  → 核對標題是不是目標 → 按「前往」→ 選擇艦隊
+    地圖  → 點畫面正中央的城市 → 城市彈窗
+    彈窗  → 按「前往」→ 選擇艦隊（鏡頭沒對準時前往只會移鏡頭，再點一次中央）
     艦隊  → 受損的按「維修」、完好空閒的勾選 → 出征
            → 都在忙就留在視窗裡等倒數
 
@@ -37,7 +40,9 @@ SAME_BEFORE_WARN = 8    # 重複幾次就跳通知
 MAX_TAPS_PER_MIN = 40
 GO_WITHOUT_DIALOG = 4   # 連按幾次「前往」都沒出現艦隊視窗，就判定流程卡住
 WRONG_CITY_CONFIRM = 2  # 連續幾次讀到同一個「錯的城市」才算數（實測 F 會被讀成 P）
-UNCLEAR_TITLE_MAX = 6   # 標題連續幾次讀不清楚，就退回去重點清單
+UNCLEAR_TITLE_MAX = 6   # 標題連續幾次讀不清楚，就當成正中央那座城、直接按前往
+CENTRE_MISS_WARN = 4    # 點正中央幾次都沒叫出彈窗，就通知使用者把鏡頭移回城市
+CENTRE_MISS_PAUSE = 5   # 之後每次點正中央之間等幾秒（不要一直亂點地圖）
 
 running = True
 
@@ -55,15 +60,15 @@ def parse_until(s):
 
 def main():
     ap = argparse.ArgumentParser(description="城戰自動派兵")
-    ap.add_argument("--target", required=True,
-                    help="左側清單上的目標名稱，例如 防守堡壘F2")
+    ap.add_argument("--target", default=None,
+                    help="（可不填）目標名稱，例如 防守堡壘F2；填了就會核對彈窗標題")
     ap.add_argument("--until", default="20:00",
                     help="幾點自動收工（預設 20:00，台灣時間城戰結束）")
     ap.add_argument("--app", default=",".join(APP_HINTS))
     ap.add_argument("--dry-run", action="store_true", help="只說它想做什麼，不點")
     args = ap.parse_args()
 
-    if not siege.split_target(args.target):
+    if args.target and not siege.split_target(args.target):
         print(f"看不懂目標「{args.target}」。請照左側清單上的寫法，例如：防守堡壘F2")
         return 1
     until = parse_until(args.until)
@@ -87,7 +92,9 @@ def main():
 
     kb = Keys()
     keep_awake()
-    log.say(f"城戰派兵：目標「{args.target}」，{args.until} 自動收工")
+    log.say(f"城戰派兵：派到畫面正中央的城市"
+            f"{'（要是「' + args.target + '」）' if args.target else ''}，"
+            f"{args.until} 自動收工")
     log.say("只派耐久滿的艦隊；受損的按維修等它修好（不加速、不花鑽石）")
     if kb.ok:
         log.say("按 空白鍵 暫停／繼續，按 q 結束")
@@ -98,11 +105,14 @@ def main():
     last_why, same = None, 0
     warned = False
     taps, sends, repairs = [], 0, 0
-    camera_on_city = False   # 鏡頭是否已經停在目標城市上
+    camera_on_city = True    # 使用者已經把鏡頭移到城市上
     center_tries = 0         # 點正中央叫彈窗試了幾次
     go_presses = 0           # 按了幾次前往還沒看到艦隊視窗
     wrong_city = (None, 0)   # (讀到的錯誤城市, 連續次數)
     unclear_title = 0        # 標題連續讀不清楚幾次
+    centre_misses = 0        # 點正中央後連續幾次沒叫出彈窗
+    centre_warned = False
+    city_seen = None         # 最近一次彈窗讀到的城市名
     fleet_sig = None         # 上次寫進 log 的艦隊狀態
     waiting_since = None     # 從什麼時候開始一直沒有可派的艦隊
     last_wait_shot = 0.0
@@ -134,7 +144,7 @@ def main():
         scale = img_scale(win, img)
         h, w = img.shape[:2]
         items = ocr(img)
-        screen = siege.read(img, items)
+        screen = siege.read(img, items, want_list=False)
         # 只拿畫面中間的字去檢查「要花錢嗎」：最上面的跑馬燈和
         # 最下面的聊天室常有別人在講鑽石，不能因此停下來
         middle = [i for i in items
@@ -150,11 +160,16 @@ def main():
                 log.line("艦隊讀值：")
                 for f in screen.fleets:
                     log.line("   " + f.detail())
-        elif screen.kind == "city" and siege.same_target(screen.city, args.target):
-            center_tries = 0     # 點正中央叫出了正確的彈窗，這招有效
+        if screen.kind in ("city", "fleets"):
+            if centre_misses >= CENTRE_MISS_WARN:
+                log.say("✅ 又叫得出彈窗了，繼續")
+            centre_misses, centre_warned = 0, False
+        if screen.kind == "city" and screen.city and screen.city != city_seen:
+            city_seen = screen.city
+            log.line(f"彈窗城市：{screen.city}")
         act = siege.plan(screen, args.target, middle,
                          camera_on_city=camera_on_city,
-                         center_tries=center_tries)
+                         center_tries=center_tries, centre_only=True)
 
         # 標題讀成別的城市：先確認不是讀錯字。實測「堡壘F2」被讀成「堡壘P2」
         if act.kind == "reset":
@@ -168,19 +183,23 @@ def main():
             wrong_city = (None, 0)
         if act.why == "城市標題沒讀清楚，再看一次":
             unclear_title += 1
-            if unclear_title >= UNCLEAR_TITLE_MAX:
+            if unclear_title >= UNCLEAR_TITLE_MAX and siege.SEND_BUTTON in screen.buttons:
                 unclear_title = 0
-                act = siege.Action("reset", why="標題一直讀不清楚，回去重點目標")
+                # 彈窗是點正中央叫出來的，就是使用者對準的那座城
+                act = siege.Action("tap", screen.buttons[siege.SEND_BUTTON],
+                                   why=f"標題讀不清楚，但這是正中央的城市，"
+                                       f"按{siege.SEND_BUTTON}")
         else:
             unclear_title = 0
 
         if act.kind == "reset":
-            hit = siege.find_target(
-                siege.SiegeScreen("map", targets=siege._read_target_list(img, ocr)),
-                args.target)
-            log.say(act.why)
-            act = (siege.Action("tap", hit[1], why=f"改點左側目標「{hit[0]}」")
-                   if hit else siege.Action("wait", seconds=2, why="清單找不到目標"))
+            # 不自己去清單找（清單太長顯示不完），請使用者把鏡頭移回去
+            if not centre_warned:
+                log.snapshot(img, "siege_wrong_city", items, act.why)
+                notify("城戰派兵", f"{act.why}，請把鏡頭移回目標城市")
+                centre_warned = True
+            act = siege.Action("wait", seconds=3,
+                               why=f"{act.why}，不派。請把鏡頭移回目標城市")
 
         if act.kind == "stop":
             log.say(act.why)
@@ -257,9 +276,15 @@ def main():
                 reason = "前往一直沒開出艦隊視窗"
                 break
         elif act.why.startswith("鏡頭已經在城市上"):
-            center_tries += 1
-        elif act.why.startswith("點左側目標") or act.why.startswith("改點左側目標"):
-            camera_on_city, center_tries = False, 0
+            centre_misses += 1
+            if centre_misses >= CENTRE_MISS_WARN:
+                if not centre_warned:
+                    log.say(f"點畫面正中央 {centre_misses} 次都沒叫出城市彈窗。"
+                            f"請把鏡頭移回目標城市上，程式會繼續試")
+                    log.snapshot(img, "siege_centre_miss", items, "正中央叫不出彈窗")
+                    notify("城戰派兵", "點畫面中央叫不出城市，請把鏡頭移回目標城市")
+                    centre_warned = True
+                time.sleep(CENTRE_MISS_PAUSE)
         time.sleep(SETTLE)
 
     kb.restore()

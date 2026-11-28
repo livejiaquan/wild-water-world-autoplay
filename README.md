@@ -39,12 +39,17 @@ above and it carries on by itself.
 
 ## City war mode (19:00–20:00 Taiwan time)
 
-During the alliance city war, `citywar.command` keeps sending fleets to a
-chosen target from the left-hand list, e.g. `防守堡壘F2`, repairing damaged
-ones first. It taps the target, checks the city popup's title matches, taps
-前往, then in the fleet dialog repairs damaged fleets, selects intact idle
-ones and sends them; with nothing available it waits out the timers in the
-dialog. It stops at 20:00.
+During the alliance city war, `citywar.command` keeps sending fleets to the
+city at the centre of the screen, repairing damaged ones first. Before
+starting, the player puts the camera on the target city (tap it in the
+left-hand list, then 前往). The bot then taps the centre of the screen to
+open the city popup, taps 前往, and in the fleet dialog repairs damaged
+fleets, selects intact idle ones and sends them; with nothing available it
+waits out the timers in the dialog. It never reads the left-hand list, which
+is often longer than the screen. If tapping the centre stops opening the
+popup, it notifies the player to move the camera back and keeps trying.
+`--target 防守堡壘F2` adds a check that the popup title matches. It stops
+at 20:00.
 
 A fleet is sent when its status reads idle (no countdown) and no 維修
 button is present; a damaged fleet always shows one. The button is found by

@@ -325,8 +325,11 @@ def _find(items, *keys):
     return None
 
 
-def read(img, items=None, ocr_fn=ocr):
-    """判讀城戰相關畫面。items 是整張 OCR 結果（已經讀過就傳進來省一次）。"""
+def read(img, items=None, ocr_fn=ocr, want_list=True):
+    """判讀城戰相關畫面。items 是整張 OCR 結果（已經讀過就傳進來省一次）。
+
+    want_list=False：地圖畫面不讀左側清單（點正中央模式用不到，還省三次 OCR）。
+    """
     h, w = img.shape[:2]
     items = items if items is not None else ocr_fn(img)
 
@@ -372,7 +375,8 @@ def read(img, items=None, ocr_fn=ocr):
     if not (_find(items, "城戰進行中", "城战进行中")
             or any(cx / w < 0.2 and split_target(t) for t, cx, cy, c in items)):
         return SiegeScreen(kind="unknown", size=(w, h))
-    return SiegeScreen(kind="map", targets=_read_target_list(img, ocr_fn),
+    return SiegeScreen(kind="map",
+                       targets=_read_target_list(img, ocr_fn) if want_list else {},
                        size=(w, h))
 
 
@@ -443,14 +447,19 @@ class Action:
     why: str = ""
 
 
-def plan(screen, target, items=(), camera_on_city=False, center_tries=0):
+def plan(screen, target, items=(), camera_on_city=False, center_tries=0,
+         centre_only=False):
     """看目前畫面，決定**下一個**動作。一次只回一個，做完要重新看畫面。
 
     原則：
       * 只點這幾種東西：清單上的目標、標題吻合的城市彈窗的「前往」、
         「維修」、艦隊列（勾選或取消勾選）、「出征」。其餘一律不點。
       * 維修只按「維修」，從不加速、不花鑽石。
-      * 只有完好（空閒＋沒有維修鈕＋耐久條滿）的艦隊會被派出去。
+      * 只有完好（空閒、沒有倒數、沒有維修鈕）的艦隊會被派出去。
+
+    centre_only=True 是「使用者自己把鏡頭移到目標城市上」的模式：
+    地圖上一律點畫面正中央叫彈窗，不去讀、不去點左側清單（清單太長
+    會顯示不完）。target 可以是 None，代表正中央是哪座城就派去哪座。
     """
     for text, *_ in items:
         if any(w in text for w in COST_WORDS):
@@ -487,7 +496,7 @@ def plan(screen, target, items=(), camera_on_city=False, center_tries=0):
     if screen.kind == "city":
         if screen.city is None:
             return Action("wait", seconds=0.3, why="城市標題沒讀清楚，再看一次")
-        if not same_target(screen.city, target):
+        if target and not same_target(screen.city, target):
             return Action("reset", why=f"開到的是「{screen.city}」，不是「{target}」")
         if SEND_BUTTON in screen.buttons:
             return Action("tap", screen.buttons[SEND_BUTTON],
@@ -499,7 +508,8 @@ def plan(screen, target, items=(), camera_on_city=False, center_tries=0):
 
     if screen.kind == "map":
         # 鏡頭已經停在城市上（剛按過前往、或剛出征完）：直接點正中央的城市
-        if camera_on_city and center_tries < CENTER_TRIES and screen.size[0]:
+        if screen.size[0] and (centre_only
+                               or (camera_on_city and center_tries < CENTER_TRIES)):
             w, h = screen.size
             return Action("tap", (int(CITY_CENTER[0] * w), int(CITY_CENTER[1] * h)),
                           why="鏡頭已經在城市上，點正中央的城市叫出彈窗")

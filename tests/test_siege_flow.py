@@ -1,7 +1,9 @@
 """城戰派兵的完整流程測試：用一個假的遊戲跑真正的 siege_bot.main()。
 
+使用者開始前自己把鏡頭移到目標城市上，程式只點畫面正中央，不碰左側清單。
+
 假遊戲照影片裡觀察到的行為反應點擊：
-  * 地圖點左側目標 → 城市彈窗（但鏡頭只是大致移過去）
+  * 地圖點左側目標 → 城市彈窗（程式不該點，點了就算錯）
   * 鏡頭還沒對準城市時按「前往」→ 只把鏡頭對準、彈窗關掉，**不會**出征畫面
     （影片 IMG_8927：5.8 秒按前往只移鏡頭，10.8 秒才出現選擇艦隊）
   * 鏡頭對準後，點畫面正中央的城市 → 彈窗；再按「前往」→ 選擇艦隊
@@ -38,9 +40,10 @@ ROW_Y = (300, 500, 700)
 
 
 class FakeGame:
-    def __init__(self, go_ever_opens=True):
+    def __init__(self, go_ever_opens=True, centred=True, near=True):
         self.kind = "map"
-        self.centred = False          # 鏡頭是否精準對準城市
+        self.centred = centred        # 鏡頭是否精準對準城市
+        self.near = near              # 沒精準對準，但正中央還點得到城市
         self.go_ever_opens = go_ever_opens
         # 第一支：空閒但受損、還被勾著；第二支：空閒完好；第三支：駐防中
         self.f = [dict(status="idle", bar=0.60, sel=True, repair=0, sent=0),
@@ -80,7 +83,7 @@ class FakeGame:
             self.log.append((self.kind, at))
             if self.kind == "map" and at == TARGET_AT:
                 self.kind, self.centred = "city", False
-            elif self.kind == "map" and at == CENTER_AT and self.centred:
+            elif self.kind == "map" and at == CENTER_AT and (self.centred or self.near):
                 self.kind = "city"
             elif self.kind == "city" and at == GO_AT:
                 if self.centred and self.go_ever_opens:
@@ -106,7 +109,7 @@ class FakeGame:
 REAL_PLAN = siege.plan
 
 
-def run(game, seconds=3.0):
+def run(game, seconds=3.0, target=None):
     """用假遊戲跑真正的 main()。回傳 (是否收工, 印出來的訊息)。"""
     tmp = tempfile.mkdtemp()
     said = []
@@ -114,6 +117,7 @@ def run(game, seconds=3.0):
         siege_bot.OUT = tmp
         siege_bot.STOP_FILE = os.path.join(tmp, "STOP")
         siege_bot.SETTLE = 0.02
+        siege_bot.CENTRE_MISS_PAUSE = 0.02
         siege_bot.signal = types.SimpleNamespace(signal=lambda *a, **k: None,
                                                  SIGINT=2)
         siege_bot.pick_window = lambda app: {"pid": 1, "wid": 1, "owner": "水世界",
@@ -127,7 +131,7 @@ def run(game, seconds=3.0):
         siege_bot.notify = lambda *a: said.append(("通知",) + a)
         siege_bot.click_bg = lambda win, x, y, s=1.0, **k: game.tap((x, y)) or (x, y)
         siege_bot.click_front = siege_bot.click_bg
-        siege.read = lambda img, items=None, ocr_fn=None: game.screen()
+        siege.read = lambda img, items=None, ocr_fn=None, **k: game.screen()
 
         def fast_plan(*a, **k):                    # 等待縮短，不必真的等倒數
             act = REAL_PLAN(*a, **k)
@@ -136,7 +140,9 @@ def run(game, seconds=3.0):
             return act
         siege.plan = fast_plan
 
-        sys.argv = ["siege_bot.py", "--target", "防守堡壘F2", "--until", "23:59"]
+        sys.argv = ["siege_bot.py", "--until", "23:59"]
+        if target:
+            sys.argv += ["--target", target]
         done = threading.Event()
         t = threading.Thread(target=lambda: (siege_bot.main(), done.set()),
                              daemon=True)
@@ -162,28 +168,60 @@ def check(name, got, want):
         fails.append(name)
 
 
-print("── 正常情況：第一次前往只移鏡頭，點正中央再前往才出征 ──")
-game = FakeGame()
+def common(game):
+    f1, f2, f3 = game.f
+    check("第二支（一開始就完好）被派出去", f2["sent"] >= 1, True)
+    check("第一支（受損）修好後也被派出去", f1["sent"] >= 1, True)
+    check("沒有任何一支在受損狀態被派出",
+          any(x.get("damaged_when_sent") for x in game.f), False)
+    check("駐防中的第三支從沒被點過",
+          any(at in ((100, ROW_Y[2]), (620, ROW_Y[2])) for _, at in game.log), False)
+    check("從沒點過左側清單", any(at == TARGET_AT for _, at in game.log), False)
+    first_send = next(i for i, (k, at) in enumerate(game.log) if at == SEND_AT)
+    check("第一次出征前，受損又被勾著的第一支已經送修或取消",
+          any(at in ((620, ROW_Y[0]), (100, ROW_Y[0]))
+              for _, at in game.log[:first_send]), True)
+
+
+def gos_before_dialog(game):
+    first = next(i for i, (k, _) in enumerate(game.log) if k == "fleets")
+    return sum(1 for k, at in game.log[:first] if at == GO_AT)
+
+
+print("── 鏡頭已經精準對準城市：點中央 → 前往 → 出征 ──")
+game = FakeGame(centred=True)
 finished, _ = run(game)
-f1, f2, f3 = game.f
 print(f"點了 {len(game.log)} 下")
 check("程式有收工", finished, True)
-check("第二支（一開始就完好）被派出去", f2["sent"] >= 1, True)
-check("第一支（受損）修好後也被派出去", f1["sent"] >= 1, True)
-check("第一支被派出去時已經修好", f1.get("damaged_when_sent", False), False)
-check("沒有任何一支在受損狀態被派出",
-      any(x.get("damaged_when_sent") for x in game.f), False)
-check("駐防中的第三支從沒被點過",
-      any(at in ((100, ROW_Y[2]), (620, ROW_Y[2])) for _, at in game.log), False)
-check("有點過正中央的城市（第二次叫出彈窗的方式）",
-      any(at == CENTER_AT for _, at in game.log), True)
-first_dialog = next(i for i, (k, _) in enumerate(game.log) if k == "fleets")
-gos = sum(1 for k, at in game.log[:first_dialog] if at == GO_AT)
-check("第一次進到出征畫面前按了兩次前往（跟影片一樣）", gos, 2)
-first_send = next(i for i, (k, at) in enumerate(game.log) if at == SEND_AT)
-check("第一次出征前，受損又被勾著的第一支已經送修或取消",
-      any(at in ((620, ROW_Y[0]), (100, ROW_Y[0]))
-          for _, at in game.log[:first_send]), True)
+check("第一下就是點正中央", game.log[0][1], CENTER_AT)
+check("前往按一次就進出征畫面", gos_before_dialog(game), 1)
+common(game)
+
+print("\n── 鏡頭大致對準（跟影片一樣）：第一次前往只移鏡頭 ──")
+game = FakeGame(centred=False, near=True)
+finished, _ = run(game)
+check("程式有收工", finished, True)
+check("進出征畫面前按了兩次前往（跟影片一樣）", gos_before_dialog(game), 2)
+common(game)
+
+print("\n── 使用者沒把鏡頭移到城市上：正中央點不到城市 ──")
+game = FakeGame(centred=False, near=False)
+finished, said = run(game, seconds=1.5)
+check("只點過正中央，沒亂點別的", {at for _, at in game.log}, {CENTER_AT})
+check("有跳通知請人把鏡頭移回去", any("鏡頭" in s[2] for s in said if s[0] == "通知"),
+      True)
+check("沒有自己放棄（等使用者移好）", finished, True)   # 由測試的 STOP 檔結束
+
+print("\n── 有指定目標，但正中央是別的城市 ──")
+game = FakeGame(centred=True)
+finished, said = run(game, seconds=1.5, target="防守堡壘E1")
+check("沒按前往", any(at == GO_AT for _, at in game.log), False)
+check("有跳通知", any(s[0] == "通知" for s in said), True)
+
+print("\n── 有指定目標而且對得上 ──")
+game = FakeGame(centred=True)
+finished, _ = run(game, target="防守堡壘F2")
+common(game)
 
 print("\n── 壞掉的情況：前往永遠只移鏡頭、不開出征畫面 ──")
 game = FakeGame(go_ever_opens=False)

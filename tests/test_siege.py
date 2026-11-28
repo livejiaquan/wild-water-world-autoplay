@@ -101,6 +101,13 @@ a = siege.plan(s, "防守堡壘F2", camera_on_city=True, center_tries=siege.CENT
 check("正中央試太多次就退回點清單", a.why.startswith("點左側目標"), True)
 a = siege.plan(s, "防守堡壘F2", camera_on_city=False)
 check("鏡頭不在城市上時點清單", a.why.startswith("點左側目標"), True)
+a = siege.plan(s, None, camera_on_city=False, centre_only=True)
+check("點中央模式：不管鏡頭狀態都點正中央", a.at, (int(0.50 * w), int(0.51 * h)))
+s = siege.read(cv2.imread(os.path.join(FIX, "city_popup.jpg")))
+a = siege.plan(s, None, centre_only=True)
+check("沒指定目標：彈窗直接按前往", a.why.endswith("按前往"), True)
+a = siege.plan(s, "防守堡壘E1", centre_only=True)
+check("指定目標但彈窗是別的城：不按前往", a.kind, "reset")
 
 
 print("\n── 低解析度實機錄影（IMG_8939，444x960）出問題的畫面 ──")
